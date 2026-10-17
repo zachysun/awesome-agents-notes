@@ -1,5 +1,6 @@
 /*
 !/.gitignore
+!/README.md
 !/notes/
 notes/archive/
 **/.DS_Store
