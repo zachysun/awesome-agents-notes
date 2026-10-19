@@ -1,5 +1,11 @@
 # DeepSeek Harness（dsh）
 
+| 源仓库 | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
+|---|---|
+| 协议 | MIT |
+| 主语言 | TypeScript |
+| 笔记基准 | commit `687f282e86`（2026-10-20） |
+
 DeepSeek Harness（简称 dsh）是 DeepSeek 官方开源的 agent harness：一套让 AI 智能体（agent）真正"跑起来"的完整支撑系统，管的是模型怎么被调用、工具怎么被执行、对话怎么被记录、危险动作怎么被拦截。它用 TypeScript 写成，是一个 monorepo（一个仓库里装很多独立发布的小包），`packages/` 目录下有近 300 个功能包、几十万行代码，MIT 协议，底层构建在自带的插件框架 Cordis 之上。它目前处于 developer preview 阶段（写作时为 0.1.6-alpha.2），官方明说会有破坏性变更。它最大的标签是 **everything-is-a-plugin（一切皆插件）**：框架里没有写死的核心，连模型适配、工具注册、对话记录、智能体循环本身都是插件，理论上每一个都能被配置换掉。
 
 ## 它解决什么问题
@@ -139,6 +145,8 @@ dsh 的会话（Session）就是这样一条**只追加的日志（append-only l
 
 此外 dsh 支持一种 PTC 模式（programmatic tool calling，程序化工具调用）：让一段代码在运行环境里直接编排多个工具调用，而不是每个工具都绕模型一圈。安全上有个巧妙的收紧：PTC 模式下只有"带父调用的子派发"允许执行真正的工具名，模型直接发起的调用会被拒绝——编排权收进沙箱里，模型只能递任务单，不能直接下手。
 
+**联网能力接入了 DeepSeek 自家的搜索与抓取（2026-10-20，0.2.1-rc 线）。** 新增两组 web 工具，走 DeepSeek 官方的 Search 与 Fetch API，整套放在设置开关后面、默认关闭，由用户显式打开（提交 fda98dadd2）。实现里有个省 token 的细节值得记：搜索分出的辅助 Messages 请求（给搜索接口做准备的内部请求）**显式关闭了 thinking**——这些辅助回合的生成正文会被 provider 丢弃，推理 token 根本没有读者；DeepSeek 模型默认开思考，不关的话每次搜索都白付一份延迟和输出 token（配套提交针对 #6099）。"谁会读这段输出"决定"要不要生成它"，这个判断对一切辅助请求都适用。
+
 ### 系统提示词
 
 系统提示词是每次对话前程序悄悄发给模型的那段"公司规章"：你是谁、能用什么工具、要遵守什么规则。多数程序把这段话写死在代码里，dsh 把它做成了一套拼装系统：
@@ -246,3 +254,4 @@ subagent 是一个 agent 把部分工作派给另一个更小的 agent 的机制
 - 2026-10-04 基于 commit 5badb15009 补充：官方版本线快进至 0.2.1-alpha.1。实验性 Claude Code mods 兼容层——mod 用 defineMod() 构建为标准 DSH 插件（专用加载器与动态 import 废弃）、ClaudeCodeMods 服务桥接事件、Web band 界面经 watchBand/pressBand 带代次号往返、兼容文档逐条列出与 Claude Code 原生行为的差异。
 - 2026-10-11 基于 commit d743267388 补充：官方版本线快进至 0.2.1-alpha.2。旧格式会话的迁移改为显式可见——存储格式状态可查询、投影读取返回迁移标记加缓存提示而不当场迁移、分叉支持 allowMigration 预检（未迁移报 session/migration-required）、界面展开前显示迁移状态；llm-pi-ai 适配层支持 pi-ai 会话提示词与工具更新；实验性保留式 git 工作树；会话工作目录与目录上下文集中管理。
 - 2026-10-17 基于 commit 1517a4dbca 补充（upstream 合并，官方版本线至 0.2.1-alpha.5）：远程访问补齐权限与身份（Typert 声明资源、非所有者调用与事件按 RBAC 放行、操作者作用域握手、对端连接携带调用者主体与消息来源记录主体）；插件市场 Discover（配置化索引、worker 线程解析缓存、模糊多语搜索、engines.dsh 兼容检查、plugin_market 工具）；宿主版本门控（页面只应用启动 release 的热替换，跨 release 弹重载确认）；cua 悬停线（系统指针显式悬停、截图像素映射）；模块级 await 禁令、profile 重组时按包文件变化替换插件、发布 alpha.4 与 alpha.5。
+- 2026-10-20 基于 commit 687f282e86 补充（upstream 合并，官方版本线至 0.2.1-rc.2）：DeepSeek 官方 Search/Fetch 两组 web 工具（设置开关默认关），辅助搜索请求显式关闭 thinking（辅助回合正文会被丢弃，推理 token 无读者）。

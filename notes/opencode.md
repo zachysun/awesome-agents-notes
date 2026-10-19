@@ -1,5 +1,11 @@
 # OpenCode
 
+| 源仓库 | [anomalyco/opencode](https://github.com/anomalyco/opencode) |
+|---|---|
+| 协议 | MIT |
+| 主语言 | TypeScript |
+| 笔记基准 | commit `d85746a054`（2026-10-20） |
+
 OpenCode 是一个开源的 AI 编码 agent（agent 指能自己连续做事的 AI 助手：读代码、改文件、跑命令、反复检查，而不是一问一答）。它用 TypeScript 写成，跑在 Bun（一个比 Node.js 更快的 JavaScript 运行环境）上，代码在一个 monorepo（单仓库多包，一个仓库里管着 35 个相对独立的小包）里，仓库版本 2.0.26。你可以把它理解成 Cursor、Claude Code 的同类，但有两点不同：第一，它不绑定任何模型厂商，OpenAI、Anthropic、DeepSeek、本地模型都能接；第二，整个项目 MIT 协议开源，核心逻辑全部可读。本文基于 dev 分支 commit `17b7678` 的源码写成；2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（详见"核心机制"一节的 v2 小节），下文提到文件路径时以 v2 合流后的现状为准。
 
 ## 它解决什么问题
@@ -118,6 +124,10 @@ OpenCode 里"agent"指一套带独立系统提示词和权限配置的运行身�
 
 这一整套对应的配置项都在 `compaction` 命名空间下，可以关闭自动压缩、调整保留量。
 
+**压缩改成了“总结整个对话”，动机是保住提示词缓存（2026-10-20）。** 此前的做法把对话切开：只把较老的部分发给压缩模型做总结，尾部保留在旁边。这轮改为把**整个对话**（包括保留的尾部）一起发给压缩模型（`packages/core/src/session/compaction.ts`，`prepare(context, context.messages, budget)`）。代码注释把账算得很直白：总结请求的前缀与正常请求完全一致（`[system][S1 + "E9 E10"][E11 … E18][E19][prompt]`），前缀不变，**总结请求就能复用正常请求已经建立的那份 prompt cache**；旧做法在 E18 之后切开，缓存断点落在摘要请求自己的路上。配套把自动压缩的触发余量从 10% 提到 15%，且至少保留 16k token（`RESERVE_SHARE = 0.15`）：多出来的余量用于吸收单步 token 的暴涨——真实会话里单步最多涨过约 22k token（p99）——一步跨过触发线时，整个对话仍能原样发出、照常命中缓存，而不是被迫立刻压缩把前缀打碎（提交 fd6589239e）。
+
+**图片裁剪的决定也固定下来，理由同样是缓存（2026-10-20）。** 上下文超限时系统会裁剪历史里的图片附件（图片是上下文里的大户），此前每轮请求独立决定裁哪些，裁剪结果在请求之间漂移，前缀缓存跟着遭殃；现在裁剪决策保持稳定——同一张图不会被这轮裁掉、下轮又放回来（`packages/core/src/session/model-request.ts`，提交 d9fe53e926）。和上面两条合起来看，opencode 这轮把“缓存利用”从提示词组装一路贯彻到了资源裁剪：凡是会出现在请求前缀里的东西，跨请求就得长得一样。
+
 #### 请求级重试：挑着重试
 
 模型请求失败很常见（限流、网络抖动、服务商过载），`session/retry.ts` 有一套完整的重试策略，三个要点：
@@ -130,7 +140,7 @@ OpenCode 里"agent"指一套带独立系统提示词和权限配置的运行身�
 
 工具（tool）是模型能调用的动作：读文件、写文件、跑命令、搜网页。每个工具实现一个统一接口（`tool/tool.ts` 的 `Def`）：`id`（名字）、`description`（给模型看的说明）、`parameters`（参数的类型定义）、`execute`（真正的执行函数）。
 
-主包内置这些工具（`tool/registry.ts`）：`bash`（跑 shell 命令）、`read`、`grep`、`glob`（按文件名模式找文件）、`edit`、`write`、`apply_patch`（打补丁方式改文件）、`webfetch`（抓网页）、`websearch`、`todowrite`（记任务清单）、`task`（派 subagent）、`skill`（调用技能）、`question`（向用户提问）等。有两个按情况启用的细节：
+主包内置这些工具（`tool/registry.ts`）：`bash`（跑 shell 命令）、`read`、`grep`、`glob`（按文件名模式找文件）、`edit`、`write`、`apply_patch`（打补丁方式改文件）、`webfetch`（抓网页）、`websearch`、`todowrite`（记任务清单）、`task`（派 subagent）、`skill`（调用技能）、`question`（向用户提问）等。其中 `todowrite` 走过一轮反复：被移除之后，2026-10-20 又以实验开关的形式恢复（提交 8f7db12b2a）。有两个按情况启用的细节：
 
 - OpenAI 的 GPT 系模型习惯用 `apply_patch` 的方式改文件，其他模型用 `edit`/`write`。注册表按模型 ID 自动切换（`gpt-` 开头且不是 `gpt-4` 的用 patch）。
 - `websearch` 只对特定模型服务商开放。
@@ -167,6 +177,8 @@ evaluate(permission, pattern, ...rulesets) → { action: "allow" | "deny" | "ask
 界面层的自动接受（auto-accept，不打断询问、直接放行权限请求的开关）也在 2026-10 中旬改成按项目记：此前它是应用级的全局开关，现在每个项目可以单独设置并覆盖全局默认值——某个仓库想放开手脚、别的项目保持保守，各记各的。
 
 最后，被规则彻底拒绝（deny 且匹配所有路径）的工具会直接从工具列表里隐藏（`visibleTools`），模型根本不知道它存在，也就不会去试。
+
+用户批准过的规则也变得可管理了（2026-10-20）：会话里积累的“已保存权限”（此前只有 `always` 放行时往列表里追加一条）现在可以编辑，写错了的放行规则不用等会话结束（提交 fede5ddda5）。
 
 v2 在这套权限规则之外又加了一层**策略（policy）**，配置键 `experimental.policies`，取代旧的 `enabled_providers`/`disabled_providers` 开关名单。语句形如"效果 + 动作 + 资源"，动作有三类：`provider.use`（能不能用某家模型服务商）、`tool.use`（某类工具在某种资源上，写成 `<权限名>:<资源>`，如 `shell:git push *`）、`integration.use`（某个 MCP 服务器、插件或技能能不能接入）。判定和权限规则表同一个思路：按顺序扫，最后一条匹配的生效，没有配策略就一切照旧。配置文档之间的顺序则反过来读：普通配置越具体越优先，策略却是用户全局的语句最后应用——所以仓库配置不能偷偷重新启用用户全局禁用的东西。组织托管语句（来自 OpenCode 云控制台）排在所有作者语句之后、拥有最终权力：组织的 deny 不能被仓库或个人的 allow 抵消。两条自保设计值得记：`tool.use` 的 allow 永不授权，它只能抵消更早的 deny，放不放行仍由权限规则和批准记录决定；策略插件本身被保护起来，插件不得增删或覆盖策略语句，配置里用任何选择器都移除不了它——否则一个仓库就能关掉整个策略执行。策略层在 2026-10 中旬转正：配置键从 `experimental.policies` 升为顶层 `policies`，旧键标弃用并指向新位置（packages/schema/src/config/experimental.ts:14 起的描述改为 "Deprecated: use top-level policies"；提交 f576da508d）。
 
@@ -300,3 +312,4 @@ OpenCode 的核心逻辑跑在一个本地 HTTP 服务里（`server/server.ts`�
 - 2026-10-11 基于 commit 7b3d4ce3a7 补充：v2 分支整体合入 dev（5caf1f9f6f "promote v2 to dev"，约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列——主包 `opencode` 拆散并入 `core`（现 35 包），依赖规定改为 Schema → Core/Protocol → Server（Protocol 与 Core 平级）；新增 v2 会话契约小节（收件箱准入与 steer/queue 投递、写前执行声明与启动恢复、一步多物理尝试、指令按内容寻址的值增量）；事件流改单次编码加每连接 4096 帧独立队列（50 客户端编码耗时约 -97.8%）；权限体系外新增 `experimental.policies` 策略层（provider.use/tool.use/integration.use，用户全局覆盖仓库、组织托管最终权力）；工具契约重写（output/content/metadata 三值、作用域化注册、注册表统一截断）；插件引入目录变换模型；旧 JSON 文件存储移除、`tool/registry.ts` 等旧路径失效已注明。
 - 2026-10-14 基于 commit 46e4695b 补充：回复截断自动续答（输出顶到 token 上限时续发请求接回剩余部分、Gemini 拆段回复续接）；提供方级 compatibility 兼容选项并迁移 setCacheKey，Anthropic 缓存断点可用 compatibility.cacheFormat 配置；应用内 auto-accept 权限改为按项目设置、可覆盖全局默认；server 插件获得 credential.activate 凭据激活入口；发布 v2.0.28，发行渠道新增 WinGet 与 ARM64。
 - 2026-10-17 基于 commit 07bbd0fd16 补充：策略配置转正（顶层 policies，experimental.policies 弃用）；插件可发起权限请求（assert，与内置同一通道）；模型推理档位从配置读取；桌面设备配对（远程访问）与 iOS 语音委托以 Voice 消息显示；TUI 新设计实验、diff 侧栏默认打开、/copy 复制最后一条助手消息、逐回合变更文件摘要；发布 v2.0.29 至 v2.0.32。
+- 2026-10-20 基于 commit d85746a054 补充：压缩改为总结整个对话（总结请求前缀与普通请求一致以复用 prompt cache）、自动压缩余量提至 15% 且至少 16k token 吸收单步暴涨；图片裁剪决策跨请求保持稳定；已保存权限可编辑；todowrite 以实验开关恢复；会话归档恢复、Windows 持久 PTY、Gemini Live 临时令牌。

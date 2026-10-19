@@ -1,5 +1,11 @@
 # Hermes Agent
 
+| 源仓库 | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) |
+|---|---|
+| 协议 | MIT |
+| 主语言 | Python（桌面端与终端界面为 TypeScript） |
+| 笔记基准 | commit `9cb34e9e28`（2026-10-20） |
+
 Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 6900 个 Python 文件，测试约 3.9 万条。
 
 它最核心的卖点是内置了一条学习路径：干活、复盘、把经验保存成记忆和技能文件，下次遇到类似任务直接复用。官方把这条路径叫 learning loop（学习闭环），是它和普通助手拉开差距的地方。
@@ -204,6 +210,8 @@ AWS Bedrock（亚马逊的模型托管服务）是这条纪律的深水区。Bed
 
 **插件碰不到订阅凭据，请求由核心代发**（2026-10 上旬）。需要用用户 ChatGPT/Codex 订阅的插件（比如实时语音要铸 OpenAI Realtime 的客户端密钥），此前各自带一份 `~/.codex/auth.json` 的读取加刷新逻辑；而 Codex 的刷新令牌（refresh token）是**一次性的**，两个刷新器同时跑，插件那个会跟 Hermes 上锁的刷新流程赛跑，最坏把用户整个令牌族（token family，一次登录派生出的全部令牌）作废。现在核心提供 `credentialed_provider_request()`：凭据由核心的锁定刷新流程解析（按 profile 隔离）、授权头由核心附加、只发往 chatgpt.com 和 api.openai.com、绝不跟随重定向，插件拿到的只是状态码、响应头和响应体。调用者按调用栈上的插件目录归因，必须在 plugin.yaml 里声明 `requires_auth: [openai-codex]`——声明在安装时展示、在 `hermes plugins show` 里可见，目录重新固定版本时新增这条声明还要用户同意。凭据的经手面从"每个插件各拿一份"变成"只有核心"，这不是加一层加密的事，是改谁经手凭据。
 
+**这条思路随后泛化了：插件自带 OAuth 客户端也归 Hermes 托管（2026-10-20）。** 上面解决的是"用平台订阅凭据"的插件，这一轮解决的是"用用户自己的第三方 OAuth 客户端"（Google、Microsoft、Notion 等）的插件：插件不再自己跑授权流程、自己保管刷新令牌，而是在 plugin.yaml 里用 `oauth:` 段声明客户端。登录、刷新、注销全部收进 Hermes：`hermes auth add|status|refresh|logout <plugin>:<id>` 走 PKCE 登录（一种授权码流程的防劫持变体），授权结果存在活跃 profile 的 auth.json 里（`plugin_oauth` 段，按插件 key 分键隔离）。配套三条纪律：`credentialed_provider_request` 只给声明过的 https 443 端口主机附带 bearer，刷新在 auth-store 锁下进行，插件自己的条目先于核心 provider 解析，防止同名的核心提供方抢占；每份授权存一个指纹（token URL、主机、scope、客户端变量），插件版本动了其中任何一项就回到未登录状态，要用户重新走一次同意——改动藏不过指纹；client secret 每次 token 请求前才读取，不在内存里常驻（提交 b1b4effe51）。目录重新固定版本时，把授权页换到另一个主机也要先进同意差异清单（提交 c3d3b15cc5）。和上一段合起来看，插件的凭据边界如今是完整的一条线：平台订阅凭据和第三方 OAuth 凭据，都由核心代管，插件只声明"我需要什么"。
+
 **连接器有了文件传输线**（2026-10 中旬）。连接器（connector，经网关接入外部服务的工具，比如查邮件、读网盘）此前只能传文本，现在文件也能作为工具的输入和输出。上传侧：工具入参要带文件时，客户端先向网关 POST `files/upload` 换一个预签名存储 URL（presigned URL，服务端临时签发的直传地址），文件直接传进存储；下载侧：工具结果里带预签名下载 URL。客户端的 `stage_file`/`put_file`/`get_file` 只用网关返回的那份头去访问存储，网关的 bearer 令牌（登录凭据）始终不会发给存储服务——经手凭据的面继续收在网关手里。连接器返回的文件统一存到 `<home>/downloads/connectors`，这个目录按媒体缓存同样的规则记为可信，于是下载下来的文件在 strict 媒体模式下也能继续转发（作为 MEDIA: 附件，或作为下一次连接器调用的文件输入）。
 
 调用语义与可观测性同轮重做。execute 从一次批量调用改为**每次请求单个调用**：失败状态码的响应体若带着调用错误（错误码 + 错误族），就作为该调用的错误条目交给模型——模型看到的是"TOOL_NOT_ALLOWED"而不是一句"连接器网关请求失败"，能据此自己想办法；重试规则收紧到 502/503/504 重试一次、429 仅当 Retry-After 写明等待不超过 10 秒时重试一次，且沿用同一幂等键（让网关能认出重复提交，不重复执行）；对端还是旧网关时自动回退批量形式并记住它的形态。`CONNECTION_EXPIRED` 与 `CONNECTION_REQUIRED` 一样保留卡片和链接行为，措辞换成重连。每条失败的日志级别从 DEBUG 提到 WARNING，回合与工具调用 ID 逐层传到网关（经同意的操作能说清是哪次调用发起的），文件输入被拒按错误类计数进指标。
@@ -260,3 +268,4 @@ AWS Bedrock（亚马逊的模型托管服务）是这条纪律的深水区。Bed
 - 2026-10-11 基于 commit 334c7dee98 补充：插件凭据请求改由核心代发——credentialed_provider_request() 统一解析 Codex 订阅凭据（锁定刷新、按 profile 隔离、只发 chatgpt.com/api.openai.com 且不跟随重定向），插件须声明 requires_auth 并在安装与目录重固定时展示或征得同意，根因是 Codex 一次性刷新令牌被插件的第二个刷新器竞争会吊销整个令牌族；会话中途落地的技能经缓存前缀后的一次性增量提示到达模型（available_skills 索引逐字节复用、不重建提示词）。
 - 2026-10-14 基于 commit e06df9c2 补充：连接器文件传输线（网关 POST files/upload 发预签名存储 URL、结果带预签名下载 URL、ConnectorClient 只用网关返回的头访问存储、bearer 不发往存储；返回文件存 <home>/downloads/connectors 并按媒体缓存规则记为可信，strict 模式下可转发）；连接器 execute 改为每请求单调用（调用错误进模型可见错误条目、502/503/504 与限时 429 各重试一次、旧网关回退批量）、CONNECTION_EXPIRED 错误族渲染给模型、调用 ID 逐层传网关加逐结果日志、文件输入被拒按错误类计指标；模型目录新增 Gemini 4 Argon（原生客户端支持长解码至 1M 输出 token、CONTINUATION 续传）；新增 machine.facts RPC；桌面端首次运行引导（onboarding）与插件目录条目批量更新。
 - 2026-10-17 基于 commit 34cb4f8873 补充：sessions.auto_prune 默认改回 false，磁盘告急时各入口一次性询问加 /autoprune 命令；网关路由身份归总为 ROUTE_BOUND_KEYS 单一清单；插件目录新增 Nous verified 信任档与大批条目（devkit Scratchpad、kanban-graph 等）；/loop 获带倒计时的常驻行；NVIDIA NIM 默认列表加入 nemotron、模型选择器置顶精选列表；0.22.2 前向移植。
+- 2026-10-20 基于 commit 9cb34e9e28 补充：插件 OAuth 客户端托管泛化——插件在 plugin.yaml 用 oauth: 声明第三方客户端（Google/Microsoft/Notion 等），hermes auth 子命令走 PKCE 登录、授权按插件 key 存 profile 的 auth.json，声明指纹（token URL/主机/scope/客户端变量）变更即回到未登录，client secret 每次请求前现读；授权主机变更进目录重固定的同意差异；桌面端工具调用后朗读最终回复。
