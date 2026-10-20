@@ -18,7 +18,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `9cb34e9e28`（2026-10-20）。
 
-## 它解决什么问题
+## 它要解决什么问题
 
 普通 AI 助手有四个通病，Hermes 逐一对着下药。
 
