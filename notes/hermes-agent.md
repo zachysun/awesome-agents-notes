@@ -4,7 +4,7 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | Python（桌面端与终端界面为 TypeScript） |
-| 笔记基准 | commit `9cb34e9e28`（2026-10-20） |
+| 笔记基准 | commit `d324d7ce5d`（2026-10-21） |
 
 Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 6900 个 Python 文件，测试约 3.9 万条。
 
@@ -16,7 +16,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 
-这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `9cb34e9e28`（2026-10-20）。
+这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `d324d7ce5d`（2026-10-21）。
 
 ## 它要解决什么问题
 
@@ -86,7 +86,7 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 **上下文压缩是唯一被允许"改历史"的操作。** 网关层在会话占用超过 85% 上下文窗口时整理，agent 层的压缩器默认在 50% 时触发（可按模型覆盖）。算法三步：先不调模型、直接裁掉老旧工具输出；再挑压缩边界；最后用辅助模型生成结构化摘要。手动 `/compress` 在所有入口可用。为什么压缩敢独享改历史的特权，见主轴一节。
 
-**七种终端执行环境。** `terminal` 命令可以在 local（本机）、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox 七种环境里执行。后几类支持"无服务器休眠"：没人用时环境睡掉几乎不花钱，来消息了再唤醒。这是"AI 住在云上"的物理基础。
+**七种终端执行环境。** `terminal` 命令可以在 local（本机）、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox 七种环境里执行。后几类支持"无服务器休眠"：没人用时环境睡掉几乎不花钱，来消息了再唤醒。这是"AI 住在云上"的物理基础。插件也能接自己的终端后端，接口是 `TerminalEnvironmentProvider`（`agent/terminal_env_provider.py`），它多了两个可选项（提交 e166392fec）：`default_cwd` 指定 `terminal.cwd` 没设、或设的是被容器守卫丢弃的宿主路径时命令从哪个目录开始，可以是沙箱内的绝对路径，也可以是 `~`——这个 `~` 永远不在宿主上展开，由环境自己解析出的 home 记在该环境上，之后记录在该 home 下的工作目录会被保留、而不是当成宿主的 `/home/...` 路径丢掉，文件工具的相对路径也以同一个 home 为基准；`supports_streams` 声明后端的环境实现了 `exec_prefix`（一段本地 argv，把其余命令带着 stdio 送进沙箱执行），Bot Desktop 的放置逻辑据此把这类后端当作 Docker/SSH/Singularity 一样对待，屏幕、computer_use 和浏览器跟着终端进沙箱。两项都不设的插件行为完全不变。
 
 **subagent 与脚本化。** `delegate_task` 生成 subagent：全新对话上下文、自己的终端会话、聚焦的任务描述；父代理只看到最终摘要，看不到中间过程，上下文不会被子任务的琐碎输出撑爆。`execute_code` 让模型写 Python 脚本、通过 RPC（远程过程调用，进程间拿结果的通信方式）调用工具，把"十步工具调用"折叠成一次脚本执行。
 
@@ -142,6 +142,8 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 **每条消息一个带得走的身份。** 会话存储有消息身份机制（schema v31）：每条持久化消息有一个 `message_uid`（uuid4），首次写入时生成一次，此后每条 SQL 拷贝路径都带着走，发给模型服务商之前剥掉。为什么需要它？物理主键（messages.id）在每次拷贝时都会重新发号——就地压缩产生的世代副本、并发尾克隆、轮转子代都是如此，行号在恢复时也不保证还在。于是问题来了：上下文引擎（管理会话上下文状态的组件）如果在每条消息上挂了自己的状态（比如"这条我处理过"），跨重启或跨压缩边界就找不到原来那条消息，只能靠"内容+时间戳"重新认行——内容会变（合并、折叠），时间戳会撞。身份机制把"认消息"从猜变成查：连续 user 消息合并时，幸存行保留自己的 uid，被吸收的 uid 记在 `_absorbed_message_uids` 里，谁被并进谁记录在案；工具调用和它的结果按"每次出现"发 uid，同一个调用被复制成多份时每次出现都有独立身份；老数据由 schema v31 在有界切片里回填，不是启动时一条巨大 UPDATE 把库锁住。列编解码收在新兄弟文件 `hermes_state_identity.py` 里。
 
+身份机制也暴露过一个显示层的坑。就地压缩会把受保护尾部的那条消息往前带，包进一个"摘要载体"（summary carrier）里——先是上一回合的原文，再是压缩摘要；载体继承原消息的 message_uid，但显示读取把归档的原件和载体里那段文字各渲染一遍，`/compress` 之后和恢复会话时，同一条回复每个字出现两次（v0.22.3 发布前的端到端测试抓到的）。修法是让摘要载体与它 uid 对应的更早那行共享显示身份，最新的副本胜出；只对载体这样做，被裁剪的工具存根仍保留归档的完整输出可见（提交 a59ed658aa，`hermes_state_messages.py`）；导出与转录列表同样只显示一次（提交 c8aa61b788），判断规则收在一个辅助函数里（提交 5a282c6c3b）。
+
 **历史清理的决定权在用户。** `sessions.auto_prune`（磁盘紧张时自动删旧会话历史）的默认值是 false——删历史是用户的决定。当初默认打开的理由也真实（state.db 会一直长到占满磁盘，#54189），所以配了一套"问一次"的机制：配置里没写这个键的安装上，磁盘告急（剩余低于 2 GiB，或剩余不足 10% 且少于 20 GiB）时各入口会问一次——经典 CLI 在启动时问 y/n，TUI 和桌面端每个 profile 弹一条常驻通知，网关问在该 profile 的主频道上、7 天内不重复；`/autoprune on|off|later|status` 在所有入口给出同样的答案，选 on/off 写入显式配置、从此不再问，选 later 顺延一周（提交 968c87f6bc）。
 
 ## 模型接入与多路复用
@@ -153,6 +155,17 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 **辅助模型路由。** 很多后台小任务不需要主力模型：起会话标题、压缩上下文、识别图片、生成向量、跑 curator 复盘。这些走 `agent/auxiliary_client.py` 的辅助通道，自动降级链：主力服务商 → OpenRouter → Nous Portal → 自定义端点 → Anthropic 官方 → 放弃。每种后台任务可以在配置里单独指定模型；402（余额不足）错误自动落到链条下一环。
 
 **提示词缓存的深水区：AWS Bedrock。** Bedrock（亚马逊的模型托管服务）用 ARN（Amazon Resource Name，云资源的唯一身份证号，形如 `arn:aws:bedrock:...:inference-profile/xxx`）标识模型；哪些模型支持提示词缓存靠一张白名单判断，白名单里存的是模型家族名（Claude、Nova）。用户配置的"应用推理配置 ARN"里看不出模型名，直接拿去对白名单必然对不上。修法（`agent/bedrock_adapter.py`）是**先归一化再匹配**：把 ARN 解析出其中包含的真实模型 ID，再查白名单。配套的反向规矩：不在白名单的未知模型一律不发缓存标记（发了会被 Bedrock 整单拒绝）；Bedrock 运行时明确拒绝某个位置的缓存标记时，记住裁定、去掉标记重试一次，不反复撞墙。通用结论：两个值长得再像，格式不统一就匹配不上；先统一格式，再比较。
+
+**Bedrock 上换模型时，前面模型的"思考"该不该重放。** Bedrock 的 Converse 接口（Bedrock 的统一对话 API）会把历史里 assistant 消息的推理内容原样发回去，推理内容分两种：可读的 reasoningText，和加密的 redactedContent 密封块（只有产出它的模型自己能解开）。问题出在会话中途换模型——用户 `/model` 切换，或 GPT 请求失败回退到 Claude：Claude 看到 GPT 的密封块直接拒绝（`Invalid data in redacted_thinking block`），而且这些块留在历史里，之后每次调用都失败；反过来 Claude 换到 GPT，GPT 拒绝可读的 reasoningText（`This model doesn't support the reasoningContent.reasoningText.text field`）。`agent/bedrock_adapter.py:923-928` 用一张"策略 → （进行中工具循环之前的回合怎么处理，循环内怎么处理）"的表回答：
+
+- `signed`（Claude）：前后都原样重放；
+- `strip`（DeepSeek-R1、Kimi K3）：之前的回合去掉推理，循环内原样；
+- `unsigned`（其他模型）：之前的回合只留可读文本，循环内原样；
+- `issuer`（openai.gpt-6 家族，不含接受可读文本的 gpt-oss）：之前的回合与循环内都去掉推理，只有**本模型自己签发**的回合原样重放。
+
+"自己签发"靠一枚印章：每个 Converse 回合的 reasoning_details 里带一条 `bedrock.native_assistant` 记录（`CONVERSE_ISSUER_TYPE`，`bedrock_adapter.py:886`），写着产出这段推理的模型名。被别的模型签发的回合，哪怕在进行中的工具循环里也拿不到原样重放；非 Claude 签发的回合对 Claude 一律不重放推理（提交 3aaabae4b0、e49938daf7、32b7af1bab）。老会话里没有印章的回合沿用策略，靠 `_bedrock_converse_call` 里被拒即重发的路径保底。
+
+主轴在这里的落点很具体。gpt-6 家族最初被放进 `strip` 策略，能修 Claude 换 GPT 的拒绝，但 `strip` 会从每个历史回合里删掉 GPT 自己的推理——每来一个新的用户回合，重放的历史就被改写一次，纯 GPT 会话的提示词缓存每回合都 miss。单开 `issuer` 策略的理由就是这一条（提交 32b7af1bab 的说明原文）：自己签发的回合原样重放，重放前缀才稳定。一个模型兼容性 bug 的修法，最终由缓存账决定。
 
 **路由身份只有一份清单。** 判断"哪些模型配置项属于路由"（改了配置要不要换路由），以 `gateway/session_route_identity.py` 里的 `ROUTE_BOUND_KEYS` 为唯一清单，覆盖路由、线上协议、上下文窗口和凭据四类（提交 d9c9fcf61d）。此前有三份手写清单（启动覆盖、`/model` 修改、旧配置迁移各一份）而且互不一致（`context_length`、`api_key_from` 的归属各说各话）——判断只有一个出处，才不会三处答案不同。
 
@@ -271,3 +284,4 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 - 2026-10-17 基于 commit 34cb4f8873 补充：sessions.auto_prune 默认改回 false，磁盘告急时各入口一次性询问加 /autoprune 命令；网关路由身份归总为 ROUTE_BOUND_KEYS 单一清单；插件目录新增 Nous verified 信任档与大批条目（devkit Scratchpad、kanban-graph 等）；/loop 获带倒计时的常驻行；NVIDIA NIM 默认列表加入 nemotron、模型选择器置顶精选列表；0.22.2 前向移植。
 - 2026-10-20 基于 commit 9cb34e9e28 补充：插件 OAuth 客户端托管泛化——插件在 plugin.yaml 用 oauth: 声明第三方客户端（Google/Microsoft/Notion 等），hermes auth 子命令走 PKCE 登录、授权按插件 key 存 profile 的 auth.json，声明指纹（token URL/主机/scope/客户端变量）变更即回到未登录，client secret 每次请求前现读；授权主机变更进目录重固定的同意差异；桌面端工具调用后朗读最终回复。
 - 2026-10-20 结构重组：改为 pi.md 同款的问题主线结构——新增主轴节（提示词缓存神圣，派生决策清单挂到各章）；"更新记录"更名"修订记录"；正文时间线叙事收敛为现状描述，演进历史归修订记录。
+- 2026-10-21 基于 commit d324d7ce5d 补充：Bedrock Converse 推理回放策略（signed/strip/unsigned/issuer 四策略表、bedrock.native_assistant 签发印章、被别的模型签发的回合不原样重放；issuer 策略单开的理由是 strip 会让纯 GPT 会话每回合 miss 缓存）；就地压缩的摘要载体在恢复、导出与转录列表里只显示一次；终端环境提供者新增 default_cwd（含不在宿主展开的 `~`）与 supports_streams 两个可选项。
