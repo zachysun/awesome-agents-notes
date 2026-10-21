@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `86a0950c61`（2026-10-21） |
+| 笔记基准 | commit `f0200df8e6`（2026-10-21） |
 
 OpenCode 是一个开源的 AI 编码 agent（agent 指能自己连续做事的 AI 助手：读代码、改文件、跑命令、反复检查，而不是一问一答）。它用 TypeScript 写成，跑在 Bun（一个比 Node.js 更快的 JavaScript 运行环境）上，代码在一个 monorepo（单仓库多包，一个仓库里管着 35 个相对独立的小包）里，仓库处于 2.1 系列。你可以把它理解成 Cursor、Claude Code 的同类，但有两点不同：第一，它不绑定任何模型厂商，OpenAI、Anthropic、DeepSeek、本地模型都能接；第二，整个项目 MIT 协议开源，核心逻辑全部可读。
 
-这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `86a0950c61`（2026-10-21）。
+这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `f0200df8e6`（2026-10-21）。
 
 ## 它要解决什么问题
 
@@ -111,7 +111,7 @@ OpenCode 里"agent"指一套带独立系统提示词和权限配置的运行身�
 - **plan**：只读模式，禁止所有编辑工具，适合先看代码、做计划。唯一例外是允许写计划文件本身（`.opencode/plans/*.md` 和全局计划目录）。
 - **general**：子任务执行者，处理多步骤任务，可以并行派多个。
 - **explore**：快速探索代码库的只读 subagent，只放开 grep、glob、read、webfetch 这类检索工具。
-- **compaction**、**title**、**summary**：三个隐藏身份，分别负责压缩历史、起会话标题、生成摘要，它们的权限是"全部拒绝"，也就是只能生成文本，碰不了任何工具。
+- **compaction**、**title**、**summary**：三个隐藏身份，分别负责压缩历史、起会话标题、生成摘要，它们的权限是"全部拒绝"，也就是只能生成文本，碰不了任何工具。起标题这种小活不动用主模型的推理档位：title 没有单独配模型时，先找该提供方的 small 模型，用它最低的推理档位；没有 small 模型就用主模型本身、但取比会话所选更低的档位——`none`、`minimal` 一定是减少推理，`low` 在默认不推理的模型上反而会打开推理，所以只在它排在会话所选档位之下时才用（`packages/core/src/session/context.ts:98-109`、`:191-200`）。
 
 用户可以在配置里定义自己的 agent，也可以用 `/agents` 命令让模型根据一句话描述自动生成一个（`agent.ts` 里的 `generate` 方法）。
 
@@ -139,7 +139,7 @@ OpenCode 里"agent"指一套带独立系统提示词和权限配置的运行身�
 
 这一整套对应的配置项都在 `compaction` 命名空间下，可以关闭自动压缩、调整保留量。
 
-**总结整个对话，动机是保住提示词缓存**（2026-10-20，提交 fd6589239e）。现在的做法是把**整个对话**（包括保留的尾部）一起发给压缩模型（`packages/core/src/session/compaction.ts`，`prepare(context, context.messages, budget)`），而不是只把较老的部分发去总结、尾部留在旁边。代码注释把账算得很直白：总结请求的前缀与正常请求完全一致（`[system][S1 + "E9 E10"][E11 … E18][E19][prompt]`），前缀不变，**总结请求就能复用正常请求已经建立的那份 prompt cache**；旧做法在尾部之前切开，缓存断点落在摘要请求自己的路上。配套把自动压缩的触发余量从 10% 提到 15%，且至少保留 16k token（`RESERVE_SHARE = 0.15`）：多出来的余量用于吸收单步 token 的暴涨——真实会话里单步最多涨过约 22k token（p99）——一步跨过触发线时，整个对话仍能原样发出、照常命中缓存，而不是被迫立刻压缩把前缀打碎。
+**总结整个对话，动机是保住提示词缓存**（2026-10-20，提交 fd6589239e）。现在的做法是把**整个对话**（包括保留的尾部）一起发给压缩模型（`packages/core/src/session/compaction.ts`，`prepare(context, context.messages, budget)`），而不是只把较老的部分发去总结、尾部留在旁边。代码注释把账算得很直白：总结请求的前缀与正常请求完全一致（`[system][S1 + "E9 E10"][E11 … E18][E19][prompt]`），前缀不变，**总结请求就能复用正常请求已经建立的那份 prompt cache**；旧做法在尾部之前切开，缓存断点落在摘要请求自己的路上。配套把自动压缩的触发余量从 10% 提到 15%，且至少保留 16k token（`RESERVE_SHARE = 0.15`）：多出来的余量用于吸收单步 token 的暴涨——真实会话里单步最多涨过约 22k token（p99）——一步跨过触发线时，整个对话仍能原样发出、照常命中缓存，而不是被迫立刻压缩把前缀打碎。摘要的输出上限按正常回合的规则算（估算 token 时留同样的安全余量），再加一道保底：余量会把接近目标的摘要压到最小输出，所以摘要至少拿到 32000 token（`SUMMARY_OUTPUT_FLOOR`）与不计余量时剩余空间两者的较小者（`packages/core/src/session/compaction.ts:105`、`:880-893`，提交 6709f5646d）。
 
 **图片裁剪的决策跨请求稳定，理由同样是缓存**（2026-10-20，提交 d9fe53e926）。上下文超限时系统会裁剪历史里的图片附件（图片是上下文里的大户），裁剪决策保持稳定——同一张图不会被这轮裁掉、下轮又放回来（`packages/core/src/session/model-request.ts`）。和压缩那条合起来看，opencode 把"缓存利用"从提示词组装一路贯彻到了资源裁剪：凡是会出现在请求前缀里的东西，跨请求就得长得一样。
 
@@ -263,11 +263,11 @@ ACP（Agent Client Protocol，智能体客户端协议）解决的是另一个�
 
 ## 模型接入与数据更新
 
-**接模型**用 Vercel AI SDK（一个统一的模型调用库），依赖里有 19 个 `@ai-sdk/*` 适配器（Anthropic、OpenAI、Google、Bedrock、Azure、Groq、Mistral、xAI 等），加上 `openai-compatible` 接住所有兼容 OpenAI 接口的服务（DeepSeek、Ollama 本地模型等都走这条道）。模型的推理档位也能从配置读取，不再只认模型目录的元数据（提交 d889cb2044）。提供方变体（同一家服务商的不同接入形态）在包归一化之后再构建（提交 e9ac459c2e）；两个小的兼容开关针对 OpenAI 兼容端点的差异：`streamUsage` 兼容选项可以关掉请求里的 `stream_options`（有些端点不认这个字段，提交 49f52ff2d5），`store` 字段只对 OpenAI 与 Azure 的 chat completions 发送（提交 57f4a364e3）。
+**接模型**用 Vercel AI SDK（一个统一的模型调用库），依赖里有 19 个 `@ai-sdk/*` 适配器（Anthropic、OpenAI、Google、Bedrock、Azure、Groq、Mistral、xAI 等），加上 `openai-compatible` 接住所有兼容 OpenAI 接口的服务（DeepSeek、Ollama 本地模型等都走这条道）。模型的推理档位也能从配置读取，不再只认模型目录的元数据（提交 d889cb2044）。提供方变体（同一家服务商的不同接入形态）在包归一化之后再构建（提交 e9ac459c2e）；两个小的兼容开关针对 OpenAI 兼容端点的差异：`streamUsage` 兼容选项可以关掉请求里的 `stream_options`（有些端点不认这个字段，提交 49f52ff2d5），`store` 字段只对 OpenAI 与 Azure 的 chat completions 发送（提交 57f4a364e3）。提供方配置里的 `baseURL` 覆盖目录里每个模型自带的端点，不只覆盖你配置过的那些模型；按模型配置的设置在之后应用，仍然优先（`packages/core/src/config/plugin/provider.ts:90-96`）——自建网关的人配一次提供方地址，不会有哪个模型因为目录自带端点而绕过网关。`OPENCODE_DISABLE_FREE_MODELS=1` 把 OpenCode 与 OpenCode Go 两个提供方里不收费的模型（`cost` 里没有任何一项输入价格大于 0）从目录里删掉，没有密钥时也不再自动列出它们（`packages/core/src/model.ts:95`，提交 aadd4d8614）。
 
-**错误有类型，界面才能说清"什么时候能再用"。** 结构化会话错误（`packages/schema/src/session-error.ts`）加了可选字段 `retryAfterMs`——服务商要求等多久再试，从记录失败的时刻起算。配额错误里，响应体含 `FreeUsageLimitError` 的被翻译成专门的 `provider.free-limit` 错误种类，带固定提示语（赠送额度用完，接自己的服务商、订阅 OpenCode Go，或换模型）和重置时间；其他配额错误仍是泛泛的 `provider.quota`（`packages/core/src/session/to-session-error.ts`，提交 a9fa57b738）。TUI 据此显示赠送额度提示与重置时间、给出换模型的提示、不再弹失败 toast（提交 86a0950c61）。
+**错误有类型，界面才能说清"什么时候能再用"。** 结构化会话错误（`packages/schema/src/session-error.ts`）加了可选字段 `retryAfterMs`——服务商要求等多久再试，从记录失败的时刻起算。配额错误里，响应体含 `FreeUsageLimitError` 的被翻译成专门的 `provider.free-limit` 错误种类，带固定提示语（赠送额度用完，接自己的服务商、订阅 OpenCode Go，或换模型）和重置时间；其他配额错误仍是泛泛的 `provider.quota`（`packages/core/src/session/to-session-error.ts`，提交 a9fa57b738）；`retryAfterMs` 对带这个字段的任何提供方错误都传递，不限于配额错误（提交 80b8762913）。TUI 据此显示赠送额度提示与重置时间、给出换模型的提示、不再弹失败 toast（提交 86a0950c61）。
 
-**回答断在半截会自动续上**。两类情况都会接着要：一是模型输出顶到单次回复的 token 上限（回答太长被硬切断），运行时带着已有内容再发一轮请求把剩余部分接回来；二是 Gemini 的传输层把一条回复拆成多段返回的情况，各段也能拼成一条完整的回答。提供方（provider，一家模型服务商的接入配置）支持提供方级别的 `compatibility` 兼容性选项，原先设置提示词缓存键的 `setCacheKey` 写法迁移了进去；Anthropic 的缓存断点（cache breakpoint，提示词缓存里"从这条标记往前都算命中"的位置标记）可以用 `compatibility.cacheFormat` 来配置。
+**回答断在半截会自动续上**。两类情况都会接着要：一是模型输出顶到单次回复的 token 上限（回答太长被硬切断），运行时带着已有内容再发一轮请求把剩余部分接回来；二是 Gemini 的传输层把一条回复拆成多段返回的情况，各段也能拼成一条完整的回答。提供方（provider，一家模型服务商的接入配置）支持提供方级别的 `compatibility` 兼容性选项，原先设置提示词缓存键的 `setCacheKey` 写法迁移了进去；Anthropic 的缓存断点（cache breakpoint，提示词缓存里"从这条标记往前都算命中"的位置标记）可以用 `compatibility.cacheFormat` 来配置。断点的默认放法（`cache: "auto"`，`packages/ai/src/cache-policy.ts:5-12`）放四处：最后一条工具定义、第一与最后一条不同的系统部件、对话尾部——前三处让工具、基础 agent、项目这几段前缀可复用，尾部断点每次工具结果之后前移，长时间运行时最近的对话前缀也能复用。手工放的断点保留并占用四断点限额，auto 只填剩下的槽位；断点只放在可缓存的部件上，`compaction`、`effort` 这类部件跳过（提交 ab249a9684）。策略按上游区别对待（`cache-policy.ts:58-60`）：OpenRouter 和 Vercel AI Gateway 后面除 Anthropic 与阿里 Qwen 之外的上游不用断点也缓存；Gemini 只认最后一个断点，尾部断点会让每一步都写一份新缓存、比不放还贵；Qwen 忽略工具定义上的断点，把工具和系统提示词一起缓存。
 
 **模型清单**（市面上有哪些模型、各自的上下文上限、价格、能力）来自 models.dev 这个公共目录。运行时的获取策略（`core/models-dev.ts`）很完整：优先读本地缓存（5 分钟有效）；缓存过期就加**跨进程文件锁**（Flock，防止同时开多个 opencode 时重复下载或写坏文件）去拉取，写入用"先写临时文件再改名"的原子方式；拉不到就用构建时打进程序的快照保底；支持用环境变量换数据源或完全禁用联网。后台还挂着一个每 60 分钟的定时刷新；刷新结果广播到整个服务器，所有实例（一个进程管的多个项目目录）同时看到新目录，不是只有触发刷新的那个（`core/models-dev.ts`，提交 5a36ee78e7）。
 
@@ -328,3 +328,4 @@ OpenCode 的核心逻辑跑在一个本地 HTTP 服务里（`server/server.ts`�
 - 2026-10-20 基于 commit d85746a054 补充：压缩改为总结整个对话（总结请求前缀与普通请求一致以复用 prompt cache）、自动压缩余量提至 15% 且至少 16k token 吸收单步暴涨；图片裁剪决策跨请求保持稳定；已保存权限可编辑；todowrite 以实验开关恢复；会话归档恢复、Windows 持久 PTY、Gemini Live 临时令牌。
 - 2026-10-20 结构重组：改为 pi.md 同款的问题主线结构——主轴定为"自己不发电，做电网"（四个标准接口方向）；LSP 与 ACP 归并为"标准协议"一节；"更新记录"更名"修订记录"；正文时间线叙事收敛为现状描述，演进历史归修订记录。
 - 2026-10-21 基于 commit 86a0950c61 补充：项目位置按活动卸载（experimental.location_idle_timeout 默认 60 分钟、运行中会话与后台任务保持加载）；Code Mode 自带解释器的 promise 语义修正（每个 job 跑到完成、工具调用仍并发）与运行时跨执行复用；赠送额度错误类型化（provider.free-limit 带 retryAfterMs，TUI 显示重置时间）；models.dev 目录刷新广播到全部实例；提供方 streamUsage 兼容开关与 store 字段按提供方发送；会话分享后端 10-15 下线、本轮删尽端点与旧存储；发布 v2.1.0、v2.1.1（内部重构：provider-context 改名 native、会话旧 schema 分离到 session-legacy，笔记正文未受影响）。
+- 2026-10-22 基于 commit f0200df8e6 补充：提供方 baseURL 覆盖目录里全部模型端点（按模型配置仍优先）；OPENCODE_DISABLE_FREE_MODELS 隐藏不收费模型；缓存断点默认放法（工具定义末尾、首尾系统部件、对话尾部，四断点限额，跳过 compaction/effort 部件）与按上游区别对待（网关上游免断点、Gemini 只认最后一个、Qwen 忽略工具断点）；压缩摘要输出上限与正常回合同规则并保底 32000 token；会话标题用 small 模型或更低推理档位；retryAfterMs 对任何带该字段的提供方错误传递；发布 v2.1.2。
