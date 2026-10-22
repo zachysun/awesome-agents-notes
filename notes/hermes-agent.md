@@ -4,7 +4,7 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | Python（桌面端与终端界面为 TypeScript） |
-| 笔记基准 | commit `55ee4acdd8`（2026-10-22） |
+| 笔记基准 | commit `70fd476dd3`（2026-10-23） |
 
 Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 6900 个 Python 文件，测试约 3.9 万条。
 
@@ -16,7 +16,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 
-这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `55ee4acdd8`（2026-10-22）。
+这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `70fd476dd3`（2026-10-23）。
 
 ## 它要解决什么问题
 
@@ -88,7 +88,7 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 **七种终端执行环境。** `terminal` 命令可以在 local（本机）、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox 七种环境里执行。后几类支持"无服务器休眠"：没人用时环境睡掉几乎不花钱，来消息了再唤醒。这是"AI 住在云上"的物理基础。插件也能接自己的终端后端，接口是 `TerminalEnvironmentProvider`（`agent/terminal_env_provider.py`），它多了两个可选项（提交 e166392fec）：`default_cwd` 指定 `terminal.cwd` 没设、或设的是被容器守卫丢弃的宿主路径时命令从哪个目录开始，可以是沙箱内的绝对路径，也可以是 `~`——这个 `~` 永远不在宿主上展开，由环境自己解析出的 home 记在该环境上，之后记录在该 home 下的工作目录会被保留、而不是当成宿主的 `/home/...` 路径丢掉，文件工具的相对路径也以同一个 home 为基准；`supports_streams` 声明后端的环境实现了 `exec_prefix`（一段本地 argv，把其余命令带着 stdio 送进沙箱执行），Bot Desktop 的放置逻辑据此把这类后端当作 Docker/SSH/Singularity 一样对待，屏幕、computer_use 和浏览器跟着终端进沙箱。两项都不设的插件行为完全不变。
 
-**subagent 与脚本化。** `delegate_task` 生成 subagent：全新对话上下文、自己的终端会话、聚焦的任务描述；父代理只看到最终摘要，看不到中间过程，上下文不会被子任务的琐碎输出撑爆。`execute_code` 让模型写 Python 脚本、通过 RPC（远程过程调用，进程间拿结果的通信方式）调用工具，把"十步工具调用"折叠成一次脚本执行。
+**subagent 与脚本化。** `delegate_task` 生成 subagent：全新对话上下文、自己的终端会话、聚焦的任务描述；父代理只看到最终摘要，看不到中间过程，上下文不会被子任务的琐碎输出撑爆。子任务走哪条模型路线（用哪个模型、哪个服务商、哪个档案），2026-10 下旬起也成了可插拔的决策：`delegation.backend` 选一个委托提供方（delegation provider），每个后端自己的设置放在 `delegation.backends.<名字>` 下（`agent/delegation_provider.py:31`）。分工的原则是核心留住 subagent 的整个生命周期——拉起、隔离、深度与并发上限、后台完成、结果组装——提供方只回答"这个任务走哪条路"：返回一个路由（provider/model/推理档位/回退链，或一个 profile 名字，让子代理以那个档案的身份运行——配置、凭据池、技能、人设、终端策略都是那个档案的，唯独转录留在发起会话的库里，因为这份活是父会话的），也可以给 `delegate_task` 的参数表追加自己的枚举参数（比如档位名），让模型按任务挑路线。默认策略"子代理跟随 delegation 配置段、空则继承父路由"本身也是一个插件（`plugins/delegation/default/`），与第三方走同一个注册口。失败处理是闭合的：配置的后端没安装或声明不可用，`delegate_task` 直接返回指名道姓的工具错误，不会悄悄退回默认后端（`agent/delegation_registry.py:121`）；拒绝按任务计——一批任务里某个路由不上，只有那一项记为错误条目，其余照常运行。会话可以用 `/delegation` 临时切换后端，不必改全局配置。`execute_code` 让模型写 Python 脚本、通过 RPC（远程过程调用，进程间拿结果的通信方式）调用工具，把"十步工具调用"折叠成一次脚本执行。
 
 ## 学习循环：记忆与技能的自动沉淀
 
@@ -294,3 +294,4 @@ MCP 服务器也可以给自己的工具标价（`tools/mcp_tool_costs.py:1-9`�
 - 2026-10-20 结构重组：改为 pi.md 同款的问题主线结构——新增主轴节（提示词缓存神圣，派生决策清单挂到各章）；"更新记录"更名"修订记录"；正文时间线叙事收敛为现状描述，演进历史归修订记录。
 - 2026-10-21 基于 commit d324d7ce5d 补充：Bedrock Converse 推理回放策略（signed/strip/unsigned/issuer 四策略表、bedrock.native_assistant 签发印章、被别的模型签发的回合不原样重放；issuer 策略单开的理由是 strip 会让纯 GPT 会话每回合 miss 缓存）；就地压缩的摘要载体在恢复、导出与转录列表里只显示一次；终端环境提供者新增 default_cwd（含不在宿主展开的 `~`）与 supports_streams 两个可选项。
 - 2026-10-22 基于 commit 55ee4acdd8 补充：MCP 服务器按工具声明花费与每聊天上限（tool_costs/spend_limit/cost_unit，trust: full 超限也要问、无人值守拒绝派发，总额随会话轮换与多路复用迁移、cron 各自计数、询问串行现读总额）；连接器结果的数据用途要求（no_training/zero_retention 存 display_metadata、仅 Nous 提供方发 provider.data_collection=deny 与 zdr、403 data_policy_denied 不可重试、赠送档用户的条件式说明）；FTS 虚表布局按代登记（fts_layout_drift 一处判定供更新提示/doctor/optimize-storage 共用）；网关 --replace 所有权证明不了时同步写 startup_failed 印章让监督者起新进程、根 home 固定 --profile default。
+- 2026-10-23 基于 commit 70fd476dd3 补充：委托路由可插拔（delegation.backend 选提供方、delegation.backends.<名> 放各自设置；核心保留 subagent 生命周期，提供方只答路由；profile 路由让子任务以另一档案身份跑而转录留在发起会话的库；默认策略本身是插件；后端不可用整体拒绝不退回默认；拒绝按任务计；/delegation 会话级切换）。

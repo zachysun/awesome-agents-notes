@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Rust |
-| 笔记基准 | commit `082900149c`（2026-10-21） |
+| 笔记基准 | commit `e0fdd608`（2026-10-23） |
 
 Codex 是 OpenAI 开源的编码 agent（agent 指能自主多步行动、调用工具完成任务的 AI 程序），主体用 Rust 编写，跑在用户自己的电脑上：终端里敲 `codex` 进入交互界面，让它读代码、改文件、跑命令、跑测试。规模不小：`codex-rs/` 目录下一百多个 crate（Rust 的模块/零件单位），四千六百多个 Rust 源文件，近两百万行代码（含测试）。在同类工具（Claude Code、opencode、Gemini CLI 这类终端编码 agent）里，Codex 的位置是官方出品、生产级强度的参考实现：一套 Rust 核心同时支撑终端界面、IDE 插件、桌面应用和云上服务，安全机制和上下文管理都做得非常系统。
 
-这份笔记按问题组织，不按 Codex 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `4ca8e7aff` 前后（2026-09-21），跟进到 commit `082900149c`（2026-10-21）。
+这份笔记按问题组织，不按 Codex 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `4ca8e7aff` 前后（2026-09-21），跟进到 commit `e0fdd608`（2026-10-23）。
 
 ## 它要解决什么问题
 
@@ -156,6 +156,8 @@ Guardian 是核心里的把关模块，职责写在模块注释的第一行："�
 
 **评审被打断之后怎么办，以及评审本身可不可见（2026-10-20）。** 被取消或超时的评审此前可以留下未完成就半途接纳的转录证据，复用这个会话会让下一次评审缺证据；现在中断的评审标记为回滚到最近一次完成的评审，已提交的评审历史保留，待审证据在下次评审时重放，回归测试验证加密证据在下次评审中恰好出现一次（提交 affa861d）。可观测侧：记录评审尝试次数与最终结果（带 `retried` 标签）、按失败原因测重试等待的时长与去向（重试、取消、到期限），必需的同步评审走 `required_sync` 路由单独计数；评审的遥测用发起它的那个回合的模型归因——模型被覆盖后，指标仍算在真正请求评审的模型头上（提交 941b32bf）。簿记也在加严：跨失败的评审转录准入有记录可查（PR 54264），图像去重与检查点恢复共用一份实现（PR 54278），压缩摘要在 Guardian 转录里归因给助手角色（PR 54281），发往 Guardian Decisions 请求的证据消息结构原样保留（PR 54589）。
 
+评审过程的原始动作还可以向外转发（默认关闭的 `guardian_recorded_items` 特性，`codex-rs/features/src/lib.rs:1909`）：评审记录的条目与打断，经父会话的原始事件订阅（raw-event subscription）送出去——条目以 `rawResponseItem/completed` 通知发出，打断以 interrupted 状态的 `turn/completed` 发出，评审线程与回合 ID 原样保留；转发不修改父会话的历史，也不替父会话完成回合（提交 07316174）。
+
 **影子评审：Decisions 对比分类器。** Guardian V2 在自己的基线评分之外，可选地把同一份证据再发给 OpenAI 的 Decisions 接口（`https://api.openai.com/v1/decisions`，模型 `gpt-6-luna`，`ext/guardian-v2/src/async_scorer/decisions.rs:30-31`）做一次独立分类，对比两边结论是否一致。它的定位是测量而不是裁决：文件头部注释写明传输失败绝不影响审批，对比结果只进指标。边界很紧：并发上限 16 个请求、单次 6 秒截止、图片 8 MiB 上限、响应 16 KiB 上限（`decisions.rs:29-37`）；准入保留最新请求，满了就取消最旧的未完成请求；错误信息里不含凭据和报文正文。两种分类模式（snapshot 按单次动作、conversation 按整段对话）现在都支持对比（提交 a13ab7e4），共用同一套过滤——省略 reasoning 与压缩项，父会话有压缩也不再导致对比被拒（提交 2f5e242d）；"请求搭建错了"记为失败、"输入项表达不了"记为跳过，两类分开统计。开关是 `Feature::GuardianV2DecisionsComparison`（`classification.rs:316-318`），每次分类读一次。
 
 评审流程拆成了准备与执行两步（提交 464add49）：`Reservation::prepare` 组装好完整的受理输入但不发模型请求，`PreparedConversation::run` 才真正执行；历史分叉与容量许可由准备好的对象持有，执行前重新核对授权、评分是否过期、后端代数（generation，后端重启或重配后递增的版本号）——陈旧的准备结果不能启动模型执行，丢弃准备对象就释放容量。可观测侧加了审批阻塞时长：`codex.guardian.turn.blocking_ms`（`ext/guardian-reviewer/src/blocking.rs:113`）在回合完成或中止时记录，带 outcome 标签；重叠的审批等待只算一次，空闲间隙不计，跨回合的待审评审按各回合实际覆盖的时间拆分，归因沿用发起回合的模型（提交 60d78332）。
@@ -167,6 +169,8 @@ Guardian 是核心里的把关模块，职责写在模块注释的第一行："�
 **运行时实例身份（`features.runtime_agent_instances`，默认关闭）。** 一条新的认证线：Codex 进程可以把自己注册成一个临时运行时实例（`codex-runtime-agent-instance` crate），拿到签名密钥后，每次模型请求都签一份带时间戳与唯一 ID 的新断言（assertion，由客户端私钥签名、证明"这个请求来自已注册的某个运行时"的短凭证）。两种模式（`features/src/runtime_auth.rs:10-15`）：`dual_header` 在 bearer 凭据之外再带一个 `x-openai-agent-assertion` 头；`assertion_only` 直接用 `Authorization: AgentAssertion …`。只选模式不等于开启，`enabled` 与 `mode` 是两个独立设置（提交 cb00a675）。注册失败不回退到纯凭据认证——策略错误原样上报，传输失败、限流、服务端错误归为暂时性错误；注册请求禁止重定向、禁止请求日志、拒绝不安全端点，待定注册在调用方重试时保留签名密钥与幂等键（提交 79a19cbb）。
 
 OAuth 授权的刷新与身份交换之间加了一道锁：`AccountOAuthGrantLease` 在身份提供方交换进行期间，阻止本认证管理器的令牌刷新轮换账号凭据；释放租约返回一份 `AccountOAuthGrant`，调用方在接受异步结果前可以重新核对它是否仍然有效，陈旧的拒绝。`login_generation`（登录代数）与账号归属分开追踪：同一账号重新登录会推进两者，仅丢失登录元数据只作废登录、保留同账号的网络策略；企业 MCP 认证靠它判断失效（提交 b2aa07db）。认证持久化与重载也防住了并发登录变更（提交 c6e4438a）。
+
+**出口围栏在继续加细。** 网络代理的 MITM 钩子（出口流量都过的中间人代理，可挂自定义处理动作）新增 `aws_sigv4` 动作（`codex-rs/network-proxy/src/aws_sigv4.rs:1-2`）：工作负载拿着占位的访问密钥发 AWS 请求，真实凭据留在可信代理进程里，代理在网络与钩子授权、头部变换都完成之后，按配置的凭据、区域与服务名重算签名；凭据范围不匹配、预签名 URL、不支持的流式上传签名一律走拒绝路径，重签生成的凭据头标为敏感，可能泄露凭据的 SDK 追踪事件被抑制（提交 9a8a85bc）。受管网络的允许规则之上还能再要求审批：`experimental_network.review_domains` 列出的主机，即使命中精确或通配的 allow 规则，也要走既有的网络审批流程——显式 deny 仍然最优先，批准后 DNS 与本地地址检查照常，执行端缺 `networkProxyReviewDomains` 能力就直接拒绝执行（`codex-rs/core/src/config/network_proxy_spec.rs:477-479`，提交 94350a91）。MCP 调用也有了协商式的网络策略元数据：`NetworkPolicyMetadataProvider` 只对可信的 ChatGPT 来源通告 `codex/network-policy-meta` 能力，调用方自带的策略元数据一律剥掉，实际限制从这次调用捕获的权限档案与服务器环境推导，策略解析失败在请求发出之前就失败（`codex-rs/codex-mcp/src/connection_manager/network_policy.rs`，提交 d124fe9d）。三件事是同一个方向：出口流量上每一跳的信任，都要有明确的机制承担，不靠"应该没人伪造"。
 
 ## 上下文管理
 
@@ -327,3 +331,4 @@ macOS 的发布包要经过代码签名（code signing，用开发者的数字�
 - 2026-10-20 结构重组：从"是什么/怎么实现/为什么"的分节模板与正文时间线叙事，改为 pi.md 同款的问题主线结构——主轴（围栏）+ 固定问题清单 + 机制讲解；MCP 并入工具系统、Guardian 与凭据并入沙箱与审批、code mode 与语音云端归特色模块；演进历史归修订记录。
 - 2026-10-21 基于 commit 6fb1c3903d 补充：Guardian V2 影子评审（Decisions 对比分类器：snapshot 与 conversation 两模式都支持、共用过滤、只测量不裁决；评审拆准备/执行两步、执行前重核授权与后端代数；审批阻塞时长指标按回合归因）；缓存键三策略（SessionDerived/Custom/Omit，传播到子 agent 与评审会话、冷恢复需重应用）；完整分叉默认保留父历史前缀；agent 间消息生命周期钩子（on_publish/on_consumed）与 code-mode 协作消息按纯文本分类；注入输入可中断 wait_agent 与 sleep；thread/sample 可取消、采样与预测分叉可按请求禁 MCP；运行时实例身份（临时注册 + 签名断言，dual_header/assertion_only 两模式）与 OAuth 授权租约、登录代数；冻结云技能快照（--cloud-skills-snapshot）；Agent Plugins 远程策展插件 app 路由与暂存目录清理；daemon 功能覆盖不匹配的恢复提示；requirements.toml 的 Windows 注册表路径覆盖；后台压缩失败不再 panic；压缩归档四批并发搜索与兄弟预取祖先保位；工具注册指标带实际增量模式、code-mode 单元格结果缓冲时长。
 - 2026-10-22 基于 commit 082900149c 补充：消息板抽成独立的 codex-message-board crate（三种可互换后端、本地存储命名空间、九个工具可按序选用子集）；企业 MCP 凭据选择的完整生命周期（账号授权优先、被拒退回保存的企业登录、按注册项记住拒绝、机密 OAuth 客户端 client_secret_basic/post、配置重载保留合资格连接、mcp_oauth_refresh_coordination 转稳定默认启用）与 MCP 工具规格跨会话共享；恢复线程保留模型设置（服务档位/推理摘要/人格，thread/revert 同步）；NFS 数据库迁移到 DELETE 日志模式的实验命令；统一执行器凭据掩码在快照不可用时回退并警告；保留指令收集与取舍策略分离（RetainedInstructionItem）；Responses Lite 用量重复计数修正；迟到的对话分类按时间戳判过期；关键路径计时工具（六类归因、并行汇合不重复计）；云端目录刷新的韧性（中途认证变化后刷新、失败退避、模型目录保留上一份）。
+- 2026-10-23 基于 commit e0fdd608 补充：网络代理 MITM 钩子新增 aws_sigv4 重签（占位凭据留在工作负载、真实凭据只在可信代理进程，不支持的流式签名拒绝）；受管网络 review_domains 在允许规则命中之上仍要求审批（显式 deny 最优先、批准后 DNS 与本地地址检查照常、执行端缺能力拒绝执行）；MCP 调用的协商式网络策略元数据（只对可信 ChatGPT 来源通告、移除调用方伪造的元数据、解析失败发送前失败）；guardian_recorded_items 把评审记录条目与打断转发给父会话原始事件订阅（不改父历史、不替父完成回合）。
