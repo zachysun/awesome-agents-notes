@@ -4,7 +4,7 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | Python（桌面端与终端界面为 TypeScript） |
-| 笔记基准 | commit `70fd476dd3`（2026-10-23） |
+| 笔记基准 | commit `c421c930fe`（2026-10-24） |
 
 Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 6900 个 Python 文件，测试约 3.9 万条。
 
@@ -16,7 +16,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 
-这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `70fd476dd3`（2026-10-23）。
+这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `c421c930fe`（2026-10-24）。
 
 ## 它要解决什么问题
 
@@ -86,9 +86,11 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 **上下文压缩是唯一被允许"改历史"的操作。** 网关层在会话占用超过 85% 上下文窗口时整理，agent 层的压缩器默认在 50% 时触发（可按模型覆盖）。算法三步：先不调模型、直接裁掉老旧工具输出；再挑压缩边界；最后用辅助模型生成结构化摘要。手动 `/compress` 在所有入口可用。为什么压缩敢独享改历史的特权，见主轴一节。
 
-**七种终端执行环境。** `terminal` 命令可以在 local（本机）、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox 七种环境里执行。后几类支持"无服务器休眠"：没人用时环境睡掉几乎不花钱，来消息了再唤醒。这是"AI 住在云上"的物理基础。插件也能接自己的终端后端，接口是 `TerminalEnvironmentProvider`（`agent/terminal_env_provider.py`），它多了两个可选项（提交 e166392fec）：`default_cwd` 指定 `terminal.cwd` 没设、或设的是被容器守卫丢弃的宿主路径时命令从哪个目录开始，可以是沙箱内的绝对路径，也可以是 `~`——这个 `~` 永远不在宿主上展开，由环境自己解析出的 home 记在该环境上，之后记录在该 home 下的工作目录会被保留、而不是当成宿主的 `/home/...` 路径丢掉，文件工具的相对路径也以同一个 home 为基准；`supports_streams` 声明后端的环境实现了 `exec_prefix`（一段本地 argv，把其余命令带着 stdio 送进沙箱执行），Bot Desktop 的放置逻辑据此把这类后端当作 Docker/SSH/Singularity 一样对待，屏幕、computer_use 和浏览器跟着终端进沙箱。两项都不设的插件行为完全不变。
+**七种终端执行环境。** `terminal` 命令可以在 local（本机）、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox 七种环境里执行。后几类支持"无服务器休眠"：没人用时环境睡掉几乎不花钱，来消息了再唤醒。这是"AI 住在云上"的物理基础。插件也能接自己的终端后端，接口是 `TerminalEnvironmentProvider`（`agent/terminal_env_provider.py`），它多了两个可选项（提交 e166392fec）：`default_cwd` 指定 `terminal.cwd` 没设、或设的是被容器守卫丢弃的宿主路径时命令从哪个目录开始，可以是沙箱内的绝对路径，也可以是 `~`——这个 `~` 永远不在宿主上展开，由环境自己解析出的 home 记在该环境上，之后记录在该 home 下的工作目录会被保留、而不是当成宿主的 `/home/...` 路径丢掉，文件工具的相对路径也以同一个 home 为基准；`supports_streams` 声明后端的环境实现了 `exec_prefix`（一段本地 argv，把其余命令带着 stdio 送进沙箱执行），Bot Desktop 的放置逻辑据此把这类后端当作 Docker/SSH/Singularity 一样对待，屏幕、computer_use 和浏览器跟着终端进沙箱。两项都不设的插件行为完全不变。文件工具在哪种环境里走宿主文件系统，现在也由环境自己声明（提交 72fc7dfe9b）：此前判定是"是不是 LocalEnvironment 的实例"——一个子类化 LocalEnvironment 来沙箱化命令的后端（比如 bubblewrap 插件）因此无法退出判定，文件工具会读写沙箱刻意藏起来的路径；现在 `BaseEnvironment.uses_host_filesystem`（本机环境为真，其余默认假）统一驱动这些判定，声明为假的环境让文件工具与其命令走同一个沙箱。
 
-**subagent 与脚本化。** `delegate_task` 生成 subagent：全新对话上下文、自己的终端会话、聚焦的任务描述；父代理只看到最终摘要，看不到中间过程，上下文不会被子任务的琐碎输出撑爆。子任务走哪条模型路线（用哪个模型、哪个服务商、哪个档案），2026-10 下旬起也成了可插拔的决策：`delegation.backend` 选一个委托提供方（delegation provider），每个后端自己的设置放在 `delegation.backends.<名字>` 下（`agent/delegation_provider.py:31`）。分工的原则是核心留住 subagent 的整个生命周期——拉起、隔离、深度与并发上限、后台完成、结果组装——提供方只回答"这个任务走哪条路"：返回一个路由（provider/model/推理档位/回退链，或一个 profile 名字，让子代理以那个档案的身份运行——配置、凭据池、技能、人设、终端策略都是那个档案的，唯独转录留在发起会话的库里，因为这份活是父会话的），也可以给 `delegate_task` 的参数表追加自己的枚举参数（比如档位名），让模型按任务挑路线。默认策略"子代理跟随 delegation 配置段、空则继承父路由"本身也是一个插件（`plugins/delegation/default/`），与第三方走同一个注册口。失败处理是闭合的：配置的后端没安装或声明不可用，`delegate_task` 直接返回指名道姓的工具错误，不会悄悄退回默认后端（`agent/delegation_registry.py:121`）；拒绝按任务计——一批任务里某个路由不上，只有那一项记为错误条目，其余照常运行。会话可以用 `/delegation` 临时切换后端，不必改全局配置。`execute_code` 让模型写 Python 脚本、通过 RPC（远程过程调用，进程间拿结果的通信方式）调用工具，把"十步工具调用"折叠成一次脚本执行。
+**浏览器控制收敛成一条线。** 此前的浏览器能力分散在内置 `browser_*` 工具与 agent-browser 包两条路里，2026-10 下旬整体收敛：agent-browser 包删除，Chromium 成为一等公民——可执行文件按固定顺序解析（配置的 `browser.executable_path`、包管理器安装的、Docker 镜像内置的、系统安装的，提交 d46703d878），Python 侧的启动器与 `browser_session` 层（`tools/browser_session.py`）成为调用方的入口。配置随之迁移（配置版本 v52）：选择后端模式的 `browser.backend` 键废弃、`AGENT_BROWSER_*` 环境变量统一搬到 `browser.*` 键下（`hermes_cli/config_migrations_browser.py:2`）。
+
+**subagent 与脚本化。** `delegate_task` 生成 subagent：全新对话上下文、自己的终端会话、聚焦的任务描述；父代理只看到最终摘要，看不到中间过程，上下文不会被子任务的琐碎输出撑爆。子任务走哪条模型路线（用哪个模型、哪个服务商、哪个档案），2026-10 下旬起也成了可插拔的决策：`delegation.backend` 选一个委托提供方（delegation provider），每个后端自己的设置放在 `delegation.backends.<名字>` 下（`agent/delegation_provider.py:31`）。分工的原则是核心留住 subagent 的整个生命周期——拉起、隔离、深度与并发上限、后台完成、结果组装——提供方只回答"这个任务走哪条路"：返回一个路由（provider/model/推理档位/回退链，或一个 profile 名字，让子任务以那个档案的身份运行——配置、凭据池、技能、人设、终端策略都是那个档案的，唯独转录留在发起会话的库里，因为这份活是父会话的），也可以给 `delegate_task` 的参数表追加自己的枚举参数（比如档位名），让模型按任务挑路线。默认策略"subagent 跟随 delegation 配置段、空则继承父路由"本身也是一个插件（`plugins/delegation/default/`），与第三方走同一个注册口。失败处理是闭合的：配置的后端没安装或声明不可用，`delegate_task` 直接返回指名道姓的工具错误，不会悄悄退回默认后端（`agent/delegation_registry.py:121`）；拒绝按任务计——一批任务里某个路由不上，只有那一项记为错误条目，其余照常运行。切换后端的入口是 `/delegation` 命令，它的语义由子任务的参数表决定：`delegate_task` 的 schema（参数表）从活跃后端构建，而这份 schema 属于缓存的提示词——只切路由不切 schema，模型看到的参数和实际走的路由就会对不上。所以会话级的临时覆盖被整个移除（提交 552f735368）：`/delegation <后端>` 默认写入配置、从下一个会话生效；要让当前会话立即切换，得显式加 `--now`，在该会话的下一回合重建工具并重新固定——一次主动选择的缓存失效（`agent/delegation_backends.py:78`）。运行中的会话按"构建工具时所用的那个后端"路由：`agent._delegation_backend` 与工具快照一起保存、一起恢复（`agent/agent_init.py:1113`），配置文件中途怎么改都不影响已开的对话（提交 4b6c7f68d9）。`execute_code` 让模型写 Python 脚本、通过 RPC（远程过程调用，进程间拿结果的通信方式）调用工具，把"十步工具调用"折叠成一次脚本执行。
 
 ## 学习循环：记忆与技能的自动沉淀
 
@@ -295,3 +297,4 @@ MCP 服务器也可以给自己的工具标价（`tools/mcp_tool_costs.py:1-9`�
 - 2026-10-21 基于 commit d324d7ce5d 补充：Bedrock Converse 推理回放策略（signed/strip/unsigned/issuer 四策略表、bedrock.native_assistant 签发印章、被别的模型签发的回合不原样重放；issuer 策略单开的理由是 strip 会让纯 GPT 会话每回合 miss 缓存）；就地压缩的摘要载体在恢复、导出与转录列表里只显示一次；终端环境提供者新增 default_cwd（含不在宿主展开的 `~`）与 supports_streams 两个可选项。
 - 2026-10-22 基于 commit 55ee4acdd8 补充：MCP 服务器按工具声明花费与每聊天上限（tool_costs/spend_limit/cost_unit，trust: full 超限也要问、无人值守拒绝派发，总额随会话轮换与多路复用迁移、cron 各自计数、询问串行现读总额）；连接器结果的数据用途要求（no_training/zero_retention 存 display_metadata、仅 Nous 提供方发 provider.data_collection=deny 与 zdr、403 data_policy_denied 不可重试、赠送档用户的条件式说明）；FTS 虚表布局按代登记（fts_layout_drift 一处判定供更新提示/doctor/optimize-storage 共用）；网关 --replace 所有权证明不了时同步写 startup_failed 印章让监督者起新进程、根 home 固定 --profile default。
 - 2026-10-23 基于 commit 70fd476dd3 补充：委托路由可插拔（delegation.backend 选提供方、delegation.backends.<名> 放各自设置；核心保留 subagent 生命周期，提供方只答路由；profile 路由让子任务以另一档案身份跑而转录留在发起会话的库；默认策略本身是插件；后端不可用整体拒绝不退回默认；拒绝按任务计；/delegation 会话级切换）。
+- 2026-10-24 基于 commit c421c930fe 补充：/delegation 命令落地且语义反转——会话级后端覆盖被移除（delegate_task 的 schema 属于缓存提示词，路由与 schema 必须一起切换），/delegation 默认保存到下一会话、--now 才在当前会话下一回合重建工具并重新固定，会话按构建工具时的后端路由（修正 2026-10-23 行中"临时切换"的说法）；终端后端用 uses_host_filesystem 声明文件工具是否走宿主文件系统（子类化本机环境的沙箱后端不再被误判）；浏览器控制收敛（agent-browser 包删除、Chromium 一等公民、browser_session 层统一入口、v52 配置键迁移）。

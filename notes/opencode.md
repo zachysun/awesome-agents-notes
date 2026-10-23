@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `6102079a0e`（2026-10-23） |
+| 笔记基准 | commit `df6fb9a460`（2026-10-24） |
 
 OpenCode 是一个开源的 AI 编码 agent（agent 指能自己连续做事的 AI 助手：读代码、改文件、跑命令、反复检查，而不是一问一答）。它用 TypeScript 写成，跑在 Bun（一个比 Node.js 更快的 JavaScript 运行环境）上，代码在一个 monorepo（单仓库多包，一个仓库里管着 35 个相对独立的小包）里，仓库处于 2.1 系列。你可以把它理解成 Cursor、Claude Code 的同类，但有两点不同：第一，它不绑定任何模型厂商，OpenAI、Anthropic、DeepSeek、本地模型都能接；第二，整个项目 MIT 协议开源，核心逻辑全部可读。
 
-这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `6102079a0e`（2026-10-23）。
+这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `df6fb9a460`（2026-10-24）。
 
 ## 它要解决什么问题
 
@@ -143,7 +143,7 @@ OpenCode 里"agent"指一套带独立系统提示词和权限配置的运行身�
 
 **图片裁剪的决策跨请求稳定，理由同样是缓存**（2026-10-20，提交 d9fe53e926）。上下文超限时系统会裁剪历史里的图片附件（图片是上下文里的大户），裁剪决策保持稳定——同一张图不会被这轮裁掉、下轮又放回来（`packages/core/src/session/model-request.ts`）。和压缩那条合起来看，opencode 把"缓存利用"从提示词组装一路贯彻到了资源裁剪：凡是会出现在请求前缀里的东西，跨请求就得长得一样。
 
-**摘要可以在后台提前算，自动压缩到点直接换入（实验开关 `precompute_compaction`，提交 6a5973d263）。** 上下文用量到达压缩上限的 85%（`PRECOMPUTE_RATIO`，`packages/core/src/session/compaction.ts:147`）且实测 prompt token 至少 64k 时，系统在后台把"最新一条响应之前的前缀"总结成一份现成摘要。选那个前缀有个讲究：它正是服务端刚处理过的部分，总结请求直接读到它的缓存（`compaction.ts:322-324`）。自动压缩到期时不再从零等一份摘要：正在写的就等它写完，写完了直接换入，换入不了才按老办法当场总结（`compaction.ts:47`、`:380-381`）；连续失败 2 次后到下次压缩前不再开新的（`compaction.ts:156`）——开关的配置说明里直说"没被用上的后台摘要照样花 token"，所以太小的对话（不足 64k）不预计算，浪费大于收益。配套一笔在摘要请求自己的转录组装上（提交 ac68d6a929）：放不下一整份转录时，从最旧的轮次开始逐级缩短——先砍工具输出，整轮省略是最后手段；最新的轮次只缩短、绝不省略，摘要最需要的正是最新内容（`compaction.ts:655-657`、`:713`）。
+**摘要可以在后台提前算，自动压缩到点直接换入（实验开关 `background_compaction`，提交 6a5973d263）。** 上下文用量到达压缩上限的 85%（`PRECOMPUTE_RATIO`，`packages/core/src/session/compaction.ts:147`）且实测 prompt token 至少 64k 时，系统在后台把"最新一条响应之前的前缀"总结成一份现成摘要。选那个前缀有个讲究：它正是服务端刚处理过的部分，总结请求直接读到它的缓存（`compaction.ts:322-324`）。自动压缩到期时不再从零等一份摘要：正在写的就等它写完，写完了直接换入，换入不了才按老办法当场总结（`compaction.ts:47`、`:380-381`）；连续失败 2 次后到下次压缩前不再开新的（`compaction.ts:156`）——开关的配置说明里直说"没被用上的后台摘要照样花 token"，所以太小的对话（不足 64k）不预计算，浪费大于收益。配套一笔在摘要请求自己的转录组装上（提交 ac68d6a929）：放不下一整份转录时，从最旧的轮次开始逐级缩短——先砍工具输出，整轮省略是最后手段；最新的轮次只缩短、绝不省略，摘要最需要的正是最新内容（`compaction.ts:655-657`、`:713`）。
 
 ### 请求级重试：挑着重试
 
@@ -267,7 +267,7 @@ MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：�
 
 ## 模型接入与数据更新
 
-**接模型**用 Vercel AI SDK（一个统一的模型调用库），依赖里有 19 个 `@ai-sdk/*` 适配器（Anthropic、OpenAI、Google、Bedrock、Azure、Groq、Mistral、xAI 等），加上 `openai-compatible` 接住所有兼容 OpenAI 接口的服务（DeepSeek、Ollama 本地模型等都走这条道）。模型的推理档位也能从配置读取，不再只认模型目录的元数据（提交 d889cb2044）。提供方变体（同一家服务商的不同接入形态）在包归一化之后再构建（提交 e9ac459c2e）；两个小的兼容开关针对 OpenAI 兼容端点的差异：`streamUsage` 兼容选项可以关掉请求里的 `stream_options`（有些端点不认这个字段，提交 49f52ff2d5），`store` 字段只对 OpenAI 与 Azure 的 chat completions 发送（提交 57f4a364e3）。提供方配置里的 `baseURL` 覆盖目录里每个模型自带的端点，不只覆盖你配置过的那些模型；按模型配置的设置在之后应用，仍然优先（`packages/core/src/config/plugin/provider.ts:90-96`）——自建网关的人配一次提供方地址，不会有哪个模型因为目录自带端点而绕过网关。`OPENCODE_DISABLE_FREE_MODELS=1` 把 OpenCode 与 OpenCode Go 两个提供方里不收费的模型（`cost` 里没有任何一项输入价格大于 0）从目录里删掉，没有密钥时也不再自动列出它们（`packages/core/src/model.ts:95`，提交 aadd4d8614）。
+**接模型**用 Vercel AI SDK（一个统一的模型调用库），依赖里有 19 个 `@ai-sdk/*` 适配器（Anthropic、OpenAI、Google、Bedrock、Azure、Groq、Mistral、xAI 等），加上 `openai-compatible` 接住所有兼容 OpenAI 接口的服务（DeepSeek、Ollama 本地模型等都走这条道）。模型的推理档位也能从配置读取，不再只认模型目录的元数据（提交 d889cb2044）。提供方变体（同一家服务商的不同接入形态）在包归一化之后再构建（提交 e9ac459c2e）；两个小的兼容开关针对 OpenAI 兼容端点的差异：`streamUsage` 兼容选项可以关掉请求里的 `stream_options`（有些端点不认这个字段，提交 49f52ff2d5），`store` 字段只对 OpenAI 与 Azure 的 chat completions 发送（提交 57f4a364e3）。提供方配置里的 `baseURL` 覆盖目录里每个模型自带的端点，不只覆盖你配置过的那些模型；按模型配置的设置在之后应用，仍然优先（`packages/core/src/config/plugin/provider.ts:90-96`）——自建网关的人配一次提供方地址，不会有哪个模型因为目录自带端点而绕过网关。`OPENCODE_DISABLE_FREE_MODELS=1` 把 OpenCode 与 OpenCode Go 两个提供方里不收费的模型（`cost` 里没有任何一项输入价格大于 0）从目录里删掉，没有密钥时也不再自动列出它们（`packages/core/src/model.ts:95`，提交 aadd4d8614）。ChatGPT 订阅的上下文上限同样从 OpenAI 提供方的内置逻辑改成了独立插件（`packages/core/src/plugin/provider/openai-context-caps.ts:1-2`，提交 2a381f895a）：模型后端其实接受每个模型的完整输入窗口，但更大的请求多吃 ChatGPT 套餐的额度，插件按套餐把窗口压到 OpenAI 的默认值（272k，`gpt-6.1-sol` 为 500k，更晚的模型沿用 500k）——拆出去之后，不用 ChatGPT 订阅的人不加载这份逻辑，电网上的又一个部件从核心挪到了插头。目录还排除了三类非对话模型：realtime（实时语音）、embedding（向量嵌入）、reranking（重排序）不再出现在模型清单里（提交 df6fb9a460）。
 
 **错误有类型，界面才能说清"什么时候能再用"。** 结构化会话错误（`packages/schema/src/session-error.ts`）加了可选字段 `retryAfterMs`——服务商要求等多久再试，从记录失败的时刻起算。配额错误里，响应体含 `FreeUsageLimitError` 的被翻译成专门的 `provider.free-limit` 错误种类，带固定提示语（赠送额度用完，接自己的服务商、订阅 OpenCode Go，或换模型）和重置时间；其他配额错误仍是泛泛的 `provider.quota`（`packages/core/src/session/to-session-error.ts`，提交 a9fa57b738）；`retryAfterMs` 对带这个字段的任何提供方错误都传递，不限于配额错误（提交 80b8762913）。TUI 据此显示赠送额度提示与重置时间、给出换模型的提示、不再弹失败 toast（提交 86a0950c61）。
 
@@ -334,3 +334,4 @@ OpenCode 的核心逻辑跑在一个本地 HTTP 服务里（`server/server.ts`�
 - 2026-10-21 基于 commit 86a0950c61 补充：项目位置按活动卸载（experimental.location_idle_timeout 默认 60 分钟、运行中会话与后台任务保持加载）；Code Mode 自带解释器的 promise 语义修正（每个 job 跑到完成、工具调用仍并发）与运行时跨执行复用；赠送额度错误类型化（provider.free-limit 带 retryAfterMs，TUI 显示重置时间）；models.dev 目录刷新广播到全部实例；提供方 streamUsage 兼容开关与 store 字段按提供方发送；会话分享后端 10-15 下线、本轮删尽端点与旧存储；发布 v2.1.0、v2.1.1（内部重构：provider-context 改名 native、会话旧 schema 分离到 session-legacy，笔记正文未受影响）。
 - 2026-10-22 基于 commit f0200df8e6 补充：提供方 baseURL 覆盖目录里全部模型端点（按模型配置仍优先）；OPENCODE_DISABLE_FREE_MODELS 隐藏不收费模型；缓存断点默认放法（工具定义末尾、首尾系统部件、对话尾部，四断点限额，跳过 compaction/effort 部件）与按上游区别对待（网关上游免断点、Gemini 只认最后一个、Qwen 忽略工具断点）；压缩摘要输出上限与正常回合同规则并保底 32000 token；会话标题用 small 模型或更低推理档位；retryAfterMs 对任何带该字段的提供方错误传递；发布 v2.1.2。
 - 2026-10-23 基于 commit 6102079a0e 补充：实验性后台压缩摘要（precompute_compaction：用量到上限 85% 且至少 64k token 时后台预总结"最新响应之前的前缀"以命中缓存，自动压缩到点换入现成的，连败 2 次停开）；摘要转录放不下时从最旧轮次逐级缩短、最新轮次只缩短不省略；client MCP（客户端应用自己跑 MCP 服务器、opencode 经入站 WebSocket 连接且传输不外拨、connectClientMcp 助手、TUI open_terminal 实验走此路）。
+- 2026-10-24 基于 commit df6fb9a460 补充：ChatGPT 上下文上限拆成独立提供方插件（openai-context-caps：272k 默认、gpt-6.1-sol 500k）；模型目录排除 realtime/embedding/reranking 三类非对话模型；实验开关 precompute_compaction 更名 background_compaction（正文已随改）；会话转录保留逻辑从 TUI 挪到共享 client 层、后台回合重新填充的非保留会话参与驱逐；MCP 服务器关机并行停止、初始对账不再重复启动已启动的服务器。
