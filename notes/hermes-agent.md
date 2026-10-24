@@ -4,7 +4,7 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | Python（桌面端与终端界面为 TypeScript） |
-| 笔记基准 | commit `c421c930fe`（2026-10-24） |
+| 笔记基准 | commit `c75a48b50b`（2026-10-25） |
 
 Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 6900 个 Python 文件，测试约 3.9 万条。
 
@@ -16,7 +16,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 
-这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `c421c930fe`（2026-10-24）。
+这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `c75a48b50b`（2026-10-25）。
 
 ## 它要解决什么问题
 
@@ -218,7 +218,11 @@ MCP 服务器也可以给自己的工具标价（`tools/mcp_tool_costs.py:1-9`�
 
 另外 cron 按 profile 隔离：profile `coder` 里的任务存在它自己的目录下、用它自己的密钥和技能执行，共享一份任务表就会把各家的配置和凭据串了味。到点的任务把产出经投递队列送回 Telegram、Discord 等平台，失败有专门的事故记录和重试通道。
 
+**任务的工具范围按任务写的算，不许悄悄扩大**（提交 11cebb30da、7c8810dc21）。任务可以用 `enabled_toolsets` 逐个列出要用的 MCP 服务器——写 toolset 名 `mcp-<server>` 或注册表里的裸名都行——但按任务合并允许清单的辅助函数此前只拿裸名做交集，两种写法对不上，交集永远为空，代码就落到"并集所有已启用服务器"的保底分支：一个只点了文件系统服务器的任务，实际拿到文件系统、GitHub、Slack 全部三家的工具。另一处同源的问题：允许清单只跟"已启用"的服务器比对，配置了但 `enabled: false` 的服务器不在集合里，同样掉进并集——运维为维护临时关掉某个服务器时，无人值守的任务反而被静默扩权到其余所有服务器。两处修复让两种写法等价、且禁用的服务器也计入用户的选择，不再有保底扩权（`hermes_cli/tools_config.py:692`、`:708`）。
+
 **网关的所有权证明与自愈。** `--replace` 要替换一个已在运行的网关实例，前提是能证明那个 PID 真的属于这个 HERMES_HOME；证明不了就拒绝发信号。此前的实现拒绝后返回失败、进程以退出码 1 结束，配了 `Restart=always` 的 systemd 单元会立刻重启、再次撞上同一个拒绝，WhatsApp 和 cron 就这样在无人值守的主机上无限循环（#135392）。所有权判定只取决于持久化的身份记录，重试改变不了结论，所以出路不是重试：拒绝时把 `gateway_state=startup_failed` 和退出原因**同步**写进 gateway_state.json（带 5 秒上界——此前快照走后台写队列，而硬退出用 `os._exit`，写得慢就死时磁盘上还写着 running，监督进程照着旧记录再来一轮），下一个监督动作据此不再信任旧 PID、直接起一个全新网关。中途试过靠退出码 78（systemd 的 `RestartPreventExitStatus`）把单元永久停住，后来撤了：那会让自愈循环停住，WhatsApp 和 cron 在无人值守的主机上一直躺着——印章本身就是解法，不需要额外惩罚（提交 7609103302、ff9e252d00、8cf3a0b03d）。另一处：`restart --all --detach` 拉起的脱离终端的根网关此前不带 profile 选择器，会跟着 `active_profile` 把某个档案的网关当成根网关启动，现在根 home 固定 `--profile default`（提交 9ec17f7f4f）。
+
+**重启后的"我回来了"通知有了唯一出处**（提交 86a61729d3、1205a010f7、bc8e9107b6、8e5ea80dfb）。网关计划内重启后，下一次启动会向各配置的主频道重放一条"Gateway online"通知，凭据是 `.restart_pending.json` 标记文件——文件名、路径与原子尽力写入收进 `gateway/restart_notice.py` 一处（`restart_notice.py:23`、`:26`、`:30`），全库唯一写入方。要修的正是写入方缺失的情形：Windows 没有 SIGUSR1，`hermes gateway restart` 退化为先 stop 再 start，没人盖章，下次启动读到的只是一次普通停止，通知整个丢掉。盖章时机也有讲究：要在老进程确实消失之后、新进程启动之前——盖早了（stop 之前），还在排空的老进程可能重连、重放通知、顺手删掉标记，新进程反而找不到；start 失败时标记留着，下一次启动仍能补上通知。POSIX 上无服务管理器的保底路径仍按原样不盖章。
 
 ## 插件、安装与分发
 
@@ -298,3 +302,4 @@ MCP 服务器也可以给自己的工具标价（`tools/mcp_tool_costs.py:1-9`�
 - 2026-10-22 基于 commit 55ee4acdd8 补充：MCP 服务器按工具声明花费与每聊天上限（tool_costs/spend_limit/cost_unit，trust: full 超限也要问、无人值守拒绝派发，总额随会话轮换与多路复用迁移、cron 各自计数、询问串行现读总额）；连接器结果的数据用途要求（no_training/zero_retention 存 display_metadata、仅 Nous 提供方发 provider.data_collection=deny 与 zdr、403 data_policy_denied 不可重试、赠送档用户的条件式说明）；FTS 虚表布局按代登记（fts_layout_drift 一处判定供更新提示/doctor/optimize-storage 共用）；网关 --replace 所有权证明不了时同步写 startup_failed 印章让监督者起新进程、根 home 固定 --profile default。
 - 2026-10-23 基于 commit 70fd476dd3 补充：委托路由可插拔（delegation.backend 选提供方、delegation.backends.<名> 放各自设置；核心保留 subagent 生命周期，提供方只答路由；profile 路由让子任务以另一档案身份跑而转录留在发起会话的库；默认策略本身是插件；后端不可用整体拒绝不退回默认；拒绝按任务计；/delegation 会话级切换）。
 - 2026-10-24 基于 commit c421c930fe 补充：/delegation 命令落地且语义反转——会话级后端覆盖被移除（delegate_task 的 schema 属于缓存提示词，路由与 schema 必须一起切换），/delegation 默认保存到下一会话、--now 才在当前会话下一回合重建工具并重新固定，会话按构建工具时的后端路由（修正 2026-10-23 行中"临时切换"的说法）；终端后端用 uses_host_filesystem 声明文件工具是否走宿主文件系统（子类化本机环境的沙箱后端不再被误判）；浏览器控制收敛（agent-browser 包删除、Chromium 一等公民、browser_session 层统一入口、v52 配置键迁移）。
+- 2026-10-25 基于 commit c75a48b50b 补充：cron 任务的 MCP 允许清单收紧（toolset 名与裸名两种写法等价、配置但禁用的服务器也计入用户选择，不再保底并集所有已启用服务器——此前一个只点一个服务器的任务实际拿到全部）；计划内重启标记收进 restart_notice.py 唯一写入方（Windows CLI 在老进程消失后、新进程启动前盖章，修复 Windows 无 SIGUSR1 导致重启通知整批丢失）。本轮区间其余提交为插件目录（plugin-catalog）的收录与版本固定，不涉及机制，未写入正文。

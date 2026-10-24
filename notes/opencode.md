@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `df6fb9a460`（2026-10-24） |
+| 笔记基准 | commit `13a615b902`（2026-10-25） |
 
 OpenCode 是一个开源的 AI 编码 agent（agent 指能自己连续做事的 AI 助手：读代码、改文件、跑命令、反复检查，而不是一问一答）。它用 TypeScript 写成，跑在 Bun（一个比 Node.js 更快的 JavaScript 运行环境）上，代码在一个 monorepo（单仓库多包，一个仓库里管着 35 个相对独立的小包）里，仓库处于 2.1 系列。你可以把它理解成 Cursor、Claude Code 的同类，但有两点不同：第一，它不绑定任何模型厂商，OpenAI、Anthropic、DeepSeek、本地模型都能接；第二，整个项目 MIT 协议开源，核心逻辑全部可读。
 
-这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `df6fb9a460`（2026-10-24）。
+这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `13a615b902`（2026-10-25）。
 
 ## 它要解决什么问题
 
@@ -207,7 +207,7 @@ OpenCode 的"开放"分两层：接模型靠插件，扩展行为也靠插件。
 
 **内置认证插件**（`plugin/` 目录）：OpenAI Codex、GitHub Copilot、Modal、GitLab、Poe、Cloudflare（Workers 和 AI Gateway 两种）、Azure、DigitalOcean、Snowflake Cortex、xAI、Cerebras。每家服务商的登录方式不同（API 密钥、OAuth 网页授权、订阅账号），插件把"怎么登这家"封装掉，用户只需 `opencode auth login` 选一家。
 
-**外部插件**。配置里写 `plugin: ["npm包名"]`，加载器（`loader.ts`）负责从 npm 安装（安装在后台异步进行，不阻塞启动）并加载。加载是严格串行的，注释里写明原因：保证钩子注册和执行顺序在不同运行之间一致。插件加载失败不会弄垮主程序，错误会作为会话事件上报，界面能看到。
+**外部插件**。配置里写 `plugin: ["npm包名"]`，加载器（`loader.ts`）负责从 npm 安装（安装在后台异步进行，不阻塞启动）并加载。加载是严格串行的，注释里写明原因：保证钩子注册和执行顺序在不同运行之间一致。插件加载失败不会弄垮主程序，错误会作为会话事件上报，界面能看到。串行加载也带出一个时序问题：安装是异步的，会话跑起来时插件可能还没就绪。现在每一步执行、每一次工具调用之前都等待插件激活完成（`packages/core/src/session/prompt.ts:38`、`generate.ts:35` 的 `Plugin.awaitActivation`），激活中的钩子不会漏接事件（提交 b64cc80db3）。
 
 **目录变换（catalog transforms）**管的是"外界可见的能力清单"（有哪些模型、哪些认证、哪些集成）怎么随插件、配置、登录状态变化。做法留了完整的决策记录：每个影响清单的来源（配置、models.dev 数据、认证插件、普通插件）都注册成一份可重放的变换，拿到一个目录编辑器往私有草稿里增删条目；目录每次把全部活动变换按注册顺序重放一遍、应用策略、算出差异、发一次 Catalog.Event.Updated；插件停用就是撤掉它的变换再重建，不需要手工回滚它的改动。被否掉的另一个方案是让插件直接改全量配置：任何字段都可能被改，配置一动所有读配置的服务都得全体重载；选定的方案把重建范围缩到目录本身。把两个方案和否掉的理由一并留档这件事本身就值得学，记录里写明动机：这些接口的行为难以从单个源码文件里还原。
 
@@ -243,7 +243,7 @@ ACP（Agent Client Protocol，智能体客户端协议）解决的是另一个�
 
 顺带把三个"协议"放在一起分辨：**ACP** 管编辑器怎么接 agent，**LSP** 管编辑器（或 agent）怎么接语言理解能力，**MCP**（Model Context Protocol，模型上下文协议）管 AI 助手怎么接外部工具和数据源。三者各管一段，OpenCode 三个都用。
 
-MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：通常是 opencode 作为 MCP 客户端，主动去连外部工具服务器；client MCP 反过来——客户端应用（编辑器、TUI）自己跑 MCP 服务器，opencode 通过客户端应用打开的入站 WebSocket 连它。注释里把边界写得很清楚：只有连接方向反转，传输从不主动外拨，只服务于进来的连接（`packages/core/src/mcp/socket-client.ts:12-18`）。客户端侧的 `connectClientMcp` 助手收一组工具定义，工具以 `<应用名>_<工具名>` 的形式暴露给模型，每次调用还带发起它的会话 ID；浏览器发不了认证头，就改用 URL 里的 ticket（`packages/client/src/mcp.ts:8`、`:10`、`:31-33`）。TUI 的实验性 `open_terminal` 走的就是这条路（提交 0030a705a3、4535146139、4a6dacec5e、0b93f0b749）：宿主把终端能力以 MCP 工具的形式交给 agent，opencode 自己不必开进程。
+MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：通常是 opencode 作为 MCP 客户端，主动去连外部工具服务器；client MCP 反过来——客户端应用（编辑器、TUI）自己跑 MCP 服务器，opencode 通过客户端应用打开的入站 WebSocket 连它。注释里把边界写得很清楚：只有连接方向反转，传输从不主动外拨，只服务于进来的连接（`packages/core/src/mcp/socket-client.ts:12-18`）。客户端侧的 `connectClientMcp` 助手收一组工具定义，工具以 `<应用名>_<工具名>` 的形式暴露给模型，每次调用还带发起它的会话 ID；浏览器发不了认证头，就改用 URL 里的 ticket（`packages/client/src/mcp.ts:8`、`:10`、`:31-33`）。TUI 的实验性 `open_terminal` 走的就是这条路（提交 0030a705a3、4535146139、4a6dacec5e、0b93f0b749）：宿主把终端能力以 MCP 工具的形式交给 agent，opencode 自己不必开进程。作为客户端连接外部服务器时也多了一分耐性：单个工具的 schema 畸形（MCP SDK 自己都会拒绝的那种）时，记一条警告、跳过这个工具，服务器上其余正常的工具照常加载（`packages/core/src/mcp/client.ts:67`、`:210`，提交 2dc8db4a9d）——一个坏工具不再拖垮整台服务器。
 
 ## 配置系统
 
@@ -269,7 +269,9 @@ MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：�
 
 **接模型**用 Vercel AI SDK（一个统一的模型调用库），依赖里有 19 个 `@ai-sdk/*` 适配器（Anthropic、OpenAI、Google、Bedrock、Azure、Groq、Mistral、xAI 等），加上 `openai-compatible` 接住所有兼容 OpenAI 接口的服务（DeepSeek、Ollama 本地模型等都走这条道）。模型的推理档位也能从配置读取，不再只认模型目录的元数据（提交 d889cb2044）。提供方变体（同一家服务商的不同接入形态）在包归一化之后再构建（提交 e9ac459c2e）；两个小的兼容开关针对 OpenAI 兼容端点的差异：`streamUsage` 兼容选项可以关掉请求里的 `stream_options`（有些端点不认这个字段，提交 49f52ff2d5），`store` 字段只对 OpenAI 与 Azure 的 chat completions 发送（提交 57f4a364e3）。提供方配置里的 `baseURL` 覆盖目录里每个模型自带的端点，不只覆盖你配置过的那些模型；按模型配置的设置在之后应用，仍然优先（`packages/core/src/config/plugin/provider.ts:90-96`）——自建网关的人配一次提供方地址，不会有哪个模型因为目录自带端点而绕过网关。`OPENCODE_DISABLE_FREE_MODELS=1` 把 OpenCode 与 OpenCode Go 两个提供方里不收费的模型（`cost` 里没有任何一项输入价格大于 0）从目录里删掉，没有密钥时也不再自动列出它们（`packages/core/src/model.ts:95`，提交 aadd4d8614）。ChatGPT 订阅的上下文上限同样从 OpenAI 提供方的内置逻辑改成了独立插件（`packages/core/src/plugin/provider/openai-context-caps.ts:1-2`，提交 2a381f895a）：模型后端其实接受每个模型的完整输入窗口，但更大的请求多吃 ChatGPT 套餐的额度，插件按套餐把窗口压到 OpenAI 的默认值（272k，`gpt-6.1-sol` 为 500k，更晚的模型沿用 500k）——拆出去之后，不用 ChatGPT 订阅的人不加载这份逻辑，电网上的又一个部件从核心挪到了插头。目录还排除了三类非对话模型：realtime（实时语音）、embedding（向量嵌入）、reranking（重排序）不再出现在模型清单里（提交 df6fb9a460）。
 
-**错误有类型，界面才能说清"什么时候能再用"。** 结构化会话错误（`packages/schema/src/session-error.ts`）加了可选字段 `retryAfterMs`——服务商要求等多久再试，从记录失败的时刻起算。配额错误里，响应体含 `FreeUsageLimitError` 的被翻译成专门的 `provider.free-limit` 错误种类，带固定提示语（赠送额度用完，接自己的服务商、订阅 OpenCode Go，或换模型）和重置时间；其他配额错误仍是泛泛的 `provider.quota`（`packages/core/src/session/to-session-error.ts`，提交 a9fa57b738）；`retryAfterMs` 对带这个字段的任何提供方错误都传递，不限于配额错误（提交 80b8762913）。TUI 据此显示赠送额度提示与重置时间、给出换模型的提示、不再弹失败 toast（提交 86a0950c61）。
+**错误有类型，界面才能说清"什么时候能再用"。** 结构化会话错误（`packages/schema/src/session-error.ts`）加了可选字段 `retryAfterMs`——服务商要求等多久再试，从记录失败的时刻起算。配额错误里，响应体含 `FreeUsageLimitError` 的被翻译成专门的 `provider.free-limit` 错误种类，带固定提示语（赠送额度用完，接自己的服务商、订阅 OpenCode Go，或换模型）和重置时间；其他配额错误仍是泛泛的 `provider.quota`（`packages/core/src/session/to-session-error.ts`，提交 a9fa57b738）；`retryAfterMs` 对带这个字段的任何提供方错误都传递，不限于配额错误（提交 80b8762913）。TUI 据此显示赠送额度提示与重置时间、给出换模型的提示、不再弹失败 toast（提交 86a0950c61）。厂商返回的"额度用尽"类错误也单独归了类：判定正则把 budget exceeded、usage limit、limit exhausted 这类说法识别为一种可分类的失败（`packages/ai/src/provider-error.ts:180`），不再是面目模糊的未知错误。
+
+**费用与额度成了核心的一等数据**（提交 4cba1b7f5d、e42f6d1016）。四个协议实现（anthropic-messages、gemini、open-responses、openai-chat）都会记录厂商上报的费用；新加的 Console 接入（`packages/core/src/console-access.ts:4`，默认指向 `https://opencode.ai/console`）从 `server.usage` 拉取订阅额度（`packages/core/src/usage-limits.ts`）：滚动、周、月三个窗口的用量表（百分比、是否已受限、何时重置）与按模型的花费。TUI 里能看到限额（提交 5e4aa55cda），会话零花费时也显示 Go 额度（提交 9109bcf136）；额度数据不进消息与会话记录（提交 de284dc1bc）——账目是账目，对话是对话。模型接入也添了一条不走个人密钥的路：GPT-Live 经 OpenCode Console 连接提供，不需要用户自己的 OpenAI key（提交 3330b3cf38）。
 
 **回答断在半截会自动续上**。两类情况都会接着要：一是模型输出顶到单次回复的 token 上限（回答太长被硬切断），运行时带着已有内容再发一轮请求把剩余部分接回来；二是 Gemini 的传输层把一条回复拆成多段返回的情况，各段也能拼成一条完整的回答。提供方（provider，一家模型服务商的接入配置）支持提供方级别的 `compatibility` 兼容性选项，原先设置提示词缓存键的 `setCacheKey` 写法迁移了进去；Anthropic 的缓存断点（cache breakpoint，提示词缓存里"从这条标记往前都算命中"的位置标记）可以用 `compatibility.cacheFormat` 来配置。断点的默认放法（`cache: "auto"`，`packages/ai/src/cache-policy.ts:5-12`）放四处：最后一条工具定义、第一与最后一条不同的系统部件、对话尾部——前三处让工具、基础 agent、项目这几段前缀可复用，尾部断点每次工具结果之后前移，长时间运行时最近的对话前缀也能复用。手工放的断点保留并占用四断点限额，auto 只填剩下的槽位；断点只放在可缓存的部件上，`compaction`、`effort` 这类部件跳过（提交 ab249a9684）。策略按上游区别对待（`cache-policy.ts:58-60`）：OpenRouter 和 Vercel AI Gateway 后面除 Anthropic 与阿里 Qwen 之外的上游不用断点也缓存；Gemini 只认最后一个断点，尾部断点会让每一步都写一份新缓存、比不放还贵；Qwen 忽略工具定义上的断点，把工具和系统提示词一起缓存。
 
@@ -335,3 +337,4 @@ OpenCode 的核心逻辑跑在一个本地 HTTP 服务里（`server/server.ts`�
 - 2026-10-22 基于 commit f0200df8e6 补充：提供方 baseURL 覆盖目录里全部模型端点（按模型配置仍优先）；OPENCODE_DISABLE_FREE_MODELS 隐藏不收费模型；缓存断点默认放法（工具定义末尾、首尾系统部件、对话尾部，四断点限额，跳过 compaction/effort 部件）与按上游区别对待（网关上游免断点、Gemini 只认最后一个、Qwen 忽略工具断点）；压缩摘要输出上限与正常回合同规则并保底 32000 token；会话标题用 small 模型或更低推理档位；retryAfterMs 对任何带该字段的提供方错误传递；发布 v2.1.2。
 - 2026-10-23 基于 commit 6102079a0e 补充：实验性后台压缩摘要（precompute_compaction：用量到上限 85% 且至少 64k token 时后台预总结"最新响应之前的前缀"以命中缓存，自动压缩到点换入现成的，连败 2 次停开）；摘要转录放不下时从最旧轮次逐级缩短、最新轮次只缩短不省略；client MCP（客户端应用自己跑 MCP 服务器、opencode 经入站 WebSocket 连接且传输不外拨、connectClientMcp 助手、TUI open_terminal 实验走此路）。
 - 2026-10-24 基于 commit df6fb9a460 补充：ChatGPT 上下文上限拆成独立提供方插件（openai-context-caps：272k 默认、gpt-6.1-sol 500k）；模型目录排除 realtime/embedding/reranking 三类非对话模型；实验开关 precompute_compaction 更名 background_compaction（正文已随改）；会话转录保留逻辑从 TUI 挪到共享 client 层、后台回合重新填充的非保留会话参与驱逐；MCP 服务器关机并行停止、初始对账不再重复启动已启动的服务器。
+- 2026-10-25 基于 commit 13a615b902 补充：费用与额度成为一等数据（四协议记录厂商上报费用；Console 接入拉取滚动/周/月三窗口额度表与按模型花费；budget exceeded、usage limit 等错误单独归类；TUI 显示限额与会话零花费时的 Go 额度；额度数据不进消息与会话记录）；GPT-Live 经 Console 连接提供、不需用户自己的 OpenAI key；插件激活前每步与每次工具调用等待激活完成；MCP 单个畸形工具跳过不再拖垮整台服务器；工具 schema 转换与 prompt hook 模型解析各做一次、git 发现按指纹缓存（性能）。
