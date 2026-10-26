@@ -50,7 +50,14 @@ dsh 组织功能的基本单元叫 capability seam（官方用词，可以理解
 - **Service Provider（服务提供方）**：真正干活的实现，可以随时换一个。
 - **Consumer（使用方）**：用这个能力的代码，常常是一个模型能调用的工具。
 
-举例：文件读写能力是"定义（`ctx.fs`）+ 本地实现 + `read`/`write` 工具"三件套；压缩能力是"定义（`ctx.compaction`）+ 具体压缩后端 + `/compact` 命令"；技能系统是"定义（`ctx.skills`）+ 本地目录/打包内置/远程等提供方 + `skill` 工具"。官方文档明确要求：新增一个能力就要把三个角色都设计出来，只写其中一个不算数。
+举例：文件读写能力是"定义（`ctx.fs`）+ 本地实现 + `read`/`write` 工具"三件套；压缩能力是"定义（`ctx.compaction`）+ 具体压缩后端 + `/compact` 命令"；技能系统是"定义（`ctx.skills`）+ 本地目录/打包内置/远程等提供方 + `skill` 工具"。三个角色的关系是：
+
+```mermaid
+flowchart LR
+    DEF["Service Definition 服务定义<br/>声明接口与挂到 ctx 的键名，不带实现"] -->|"提供方实现它，可随时换"| PROV["Service Provider 服务提供方<br/>真正干活的实现"]
+    PROV -->|"使用方调用"| CONS["Consumer 使用方<br/>常常是模型能调的工具"]
+    DEF -.->|"例"| EX["ctx.fs + 本地实现 + read/write 工具<br/>ctx.compaction + 压缩后端 + /compact 命令<br/>ctx.skills + 多种提供方 + skill 工具"]
+```官方文档明确要求：新增一个能力就要把三个角色都设计出来，只写其中一个不算数。
 
 这样拆的回报是"换一处、动全身"：文件系统和子进程共享同一个"执行世界"，把它们的提供方指向一台远程沙箱，Bash、PTY、代码导航（LSP）就全部跟着搬到沙箱里跑了，不需要为每个功能单独写远程版。
 
@@ -105,7 +112,25 @@ dsh 把 agent 的一次工作过程切成两级：
 - **step（步）**：一次"问模型 + 执行模型要的工具"的完整往返。
 - **turn（回合）**：零个或多个 step 的集合，从输入被认领开始，到没有任何欠着的事为止。
 
-一个回合内部的顺序大致是：认领输入 → 组装系统提示词和工具清单 → `agent/pre-step` 决定放行哪些消息 → 请求模型 → 流式接收回复 → 逐个执行工具调用（`tools/pre-execute` → `tools/execute` → `tools/post-execute`）→ 如果工具结果需要再问模型，就开下一步 → 直到无事可做，`agent/turn-stopping` 之后关闭回合。
+一个回合内部的顺序大致是：认领输入 → 组装系统提示词和工具清单 → `agent/pre-step` 决定放行哪些消息 → 请求模型 → 流式接收回复 → 逐个执行工具调用（`tools/pre-execute` → `tools/execute` → `tools/post-execute`）→ 如果工具结果需要再问模型，就开下一步 → 直到无事可做，`agent/turn-stopping` 之后关闭回合。这条流水线画出来是：
+
+```mermaid
+flowchart TD
+    INBOX["收件箱（Agent 句柄上）<br/>next-turn：排队普通输入，各自开新回合<br/>next-step：急件，当前回合最近的 step 边界插入<br/>inject：只注入模型可见上下文、不唤醒驱动器"]
+    INBOX --> CLAIM["认领输入"]
+    CLAIM --> ASM["组装系统提示词和工具清单"]
+    ASM --> PRE["agent/pre-step：决定放行哪些消息"]
+    PRE --> REQ["请求模型（经 llm-pi-ai 走 pi-ai 统一 API）"]
+    REQ --> STREAM["流式接收回复"]
+    STREAM --> P1["tools/pre-execute（工具审批插在这）"]
+    P1 --> P2["tools/execute"]
+    P2 --> P3["tools/post-execute"]
+    P3 --> MORE{"工具结果需要再问模型？"}
+    MORE -->|"是，开下一步"| PRE
+    MORE -->|"否"| STOP["agent/turn-stopping 后关闭回合"]
+    ERR["agent/request-error<br/>请求出错时决定要不要重试"] -.-> REQ
+    CANCEL["cancel 带原因（用户 / 父级 / 钩子 / 销毁）<br/>记进 turn/end 事件"] -.-> STOP
+```
 
 分两级的理由是**拦截点可以精确到步**。"工具执行前先过审批"插在 `tools/pre-execute` 就行，不用碰循环本身；"模型请求出错后决定要不要重试"有专门的 `agent/request-error`。粒度切细了，扩展点才能又多又稳。模型请求经 `llm-pi-ai` 包走 pi 项目的统一模型 API（pi-ai）发出，适配层支持 pi-ai 的会话级提示词更新与工具更新——会话中途的提示词与工具变更按 pi-ai 的语义传下去；借标准适配层的实际好处在这：上游协议演进，下游跟着升级就行。
 
@@ -263,3 +288,4 @@ subagent 是一个 agent 把部分工作派给另一个更小的 agent 的机制
 - 2026-10-20 基于 commit 687f282e86 补充（upstream 合并，官方版本线至 0.2.1-rc.2）：DeepSeek 官方 Search/Fetch 两组 web 工具（设置开关默认关），辅助搜索请求显式关闭 thinking（辅助回合正文会被丢弃，推理 token 无读者）。
 - 2026-10-20 结构重组：改为 pi.md 同款的问题主线结构——新增主轴节（没有写死的核心，一切皆插件，Claude Code mods 兼容层作为主轴的极致演示）；正文时间线叙事收敛为现状描述，演进历史归修订记录；"更新记录"更名"修订记录"。
 - 2026-10-24 基于 commit 22ddee3792 补充（upstream 合并，官方版本线至 0.2.1-rc.3）：propose_action 工具与 action cards（实验包在回答下方提供可选动作：模型加载技能后提案、回合结束出卡片、用户不动不执行、选择记录并在下次请求回报、卡片类型可注册；个性化页面与插件推荐合并为「个性化推荐」插件）；自定义模型默认上限提高至 1M 上下文与 128K 输出；liveshare-protocol 拆为独立包（线协议重置 v1 发布）；会话导出新增 Session Markdown。
+- 2026-10-26 基于 commit 22ddee3792 补充：Agent 循环节新增回合流水线图（含收件箱与各拦截点），能力挂载点节新增三段式拆分图（内容取自正文已有机制，不引入新事实）。

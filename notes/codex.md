@@ -70,7 +70,22 @@ Codex 是 OpenAI 开源的编码 agent（agent 指能自主多步行动、调用
 
 注入的输入也能叫醒等待中的 agent。模型调用 `wait_agent`（等子 agent 干完）或 `clock.sleep`（定时睡眠）时，等待开始之前就排进队的通知型注入同样会中断等待、进入下一次模型请求。输入队列用 `has_pending_injection` 标记区分"通知型注入"与"被动上下文"（`core/src/session/input_queue.rs:92-93`）：前者算作待处理的插话活动，能打断等待；标记在待处理输入被取走或清空时重置，之后到达的被动上下文不会误触发中断（提交 305db380）。
 
-把循环拆成 turn/step 两级，是为了让"可打断、可恢复、可计费"都有清晰的边界：打断发生在 turn 级（保留已完成的 step），上下文压缩发生在 step 之间（保证发给模型的每次请求都是完整一致的快照），限额统计也按 turn 结算。整个循环用 CancellationToken（Rust 里一个可以被多方触发的"取消信号"对象）贯穿，用户按 Esc 打断时，正在进行的请求和工具执行都能干净地停下来。
+把循环拆成 turn/step 两级，是为了让"可打断、可恢复、可计费"都有清晰的边界：打断发生在 turn 级（保留已完成的 step），上下文压缩发生在 step 之间（保证发给模型的每次请求都是完整一致的快照），限额统计也按 turn 结算。整个循环用 CancellationToken（Rust 里一个可以被多方触发的"取消信号"对象）贯穿，用户按 Esc 打断时，正在进行的请求和工具执行都能干净地停下来。整条链路画出来是：
+
+```mermaid
+flowchart TD
+    INPUT["用户输入 Op::TurnInput<br/>thread 是完整协作会话；turn 是一句话到处理完；step 是一次采样往返"] --> CTX["核心组装上下文"]
+    CTX --> STEP["step：发起采样请求<br/>走 Responses API，收事件流"]
+    STEP --> EV{"事件流里是什么？"}
+    EV -->|"工具调用 OutputItemDone"| PAR["FuturesOrdered 并行执行互不依赖的调用"]
+    PAR --> APP["输出追加进对话历史"]
+    APP --> CTX
+    EV -->|"文字 / 推理摘要增量"| STEP
+    EV -->|"Completed（只回复）"| TEND["turn 结束"]
+    STEER["用户中途插话 steer<br/>instant_interrupt 打断响应流与重试退避<br/>排队输入接上、完整历史重发"] -.->|"抢占"| CTX
+    WAKE["wait_agent / clock.sleep 等待中<br/>通知型注入（has_pending_injection）中断等待"] -.-> STEP
+    ESC["用户按 Esc（CancellationToken 贯穿全循环）"] -.->|"打断"| TEND
+```
 
 ## 工具系统
 
@@ -148,7 +163,18 @@ Guardian 是核心里的把关模块，职责写在模块注释的第一行："�
 > The extension chooses policy and evidence; core enforces permissions and mandatory review requirements.
 > （扩展层负责选择策略和提供证据；核心层负责强制执行权限和强制评审要求。）
 
-什么算敏感、什么时候要审、budget（给评审动作限定的用量上限）给多少，这些"政策"放在扩展层，可以随时调整；但"任何动作都必须过权限检查、该评审的必须评审"这条底线长在核心里，谁都绕不过去。Guardian 管两种 budget：input budget（评审时喂给模型的内容量上限）和 request budget（评审可以用多少次模型请求），防止把关这个动作本身失控膨胀。配套的 `guardian-context` crate 负责把"给评审者看的材料"（对话节选、待审动作、用户此前的授权）按 budget 组装成上下文，超了就按优先级截断。收集与取舍分两步：收集到的片段先表示为 `RetainedInstructionItem`（`guardian-context/src/retained_instructions.rs:39`），保留内容、语义种类和来源；组装上下文时才分配保留策略——用户指令、宿主通知、框架性内容必留，助手上下文可选、按 commentary 优先级参与截断（提交 d685e61e）。安全系统里最怕两件事：政策太死板（什么都拦，用户烦了就全关掉）和底线太柔软（说变通就变通）。"策略灵活、底线强硬"的分工同时防住了这两个坑。
+什么算敏感、什么时候要审、budget（给评审动作限定的用量上限）给多少，这些"政策"放在扩展层，可以随时调整；但"任何动作都必须过权限检查、该评审的必须评审"这条底线长在核心里，谁都绕不过去。Guardian 管两种 budget：input budget（评审时喂给模型的内容量上限）和 request budget（评审可以用多少次模型请求），防止把关这个动作本身失控膨胀。配套的 `guardian-context` crate 负责把"给评审者看的材料"（对话节选、待审动作、用户此前的授权）按 budget 组装成上下文，超了就按优先级截断。收集与取舍分两步：收集到的片段先表示为 `RetainedInstructionItem`（`guardian-context/src/retained_instructions.rs:39`），保留内容、语义种类和来源；组装上下文时才分配保留策略——用户指令、宿主通知、框架性内容必留，助手上下文可选、按 commentary 优先级参与截断（提交 d685e61e）。安全系统里最怕两件事：政策太死板（什么都拦，用户烦了就全关掉）和底线太柔软（说变通就变通）。"策略灵活、底线强硬"的分工同时防住了这两个坑。一次动作的把关流程是：
+
+```mermaid
+flowchart TD
+    A["模型请求一个动作"] --> B["核心强制：权限检查（这条底线谁都绕不过）"]
+    B --> C{"敏感动作？"}
+    C -->|"否"| F["执行"]
+    C -->|"是"| D["Guardian 评审（独立评审会话）<br/>政策与证据由扩展层提供：什么算敏感、何时要审、budget 给多少<br/>评审材料由 guardian-context 按 input / request budget 组装、超限按优先级截断"]
+    D --> E{"评审结论"}
+    E -->|"批准"| F
+    E -->|"拒绝"| G["动作被拦"]
+```
 
 评审的边界：评审用的上下文捕获是无条件的——会话捕获和 subagent 历史分叉一律带上线程上下文，不受配置开关影响；评审上下文绑定到**动作的目标环境**——动作打在哪个环境上，就用哪个环境的权限上下文来审，避免多环境共用一个 Guardian 会话时拿主环境的限制去审次环境的动作，目标环境不可用就拒绝评审；浏览器连接器（Browser connector）也纳入 computer-use 策略和审查。
 
@@ -337,3 +363,4 @@ macOS 的发布包要经过代码签名（code signing，用开发者的数字�
 - 2026-10-22 基于 commit 082900149c 补充：消息板抽成独立的 codex-message-board crate（三种可互换后端、本地存储命名空间、九个工具可按序选用子集）；企业 MCP 凭据选择的完整生命周期（账号授权优先、被拒退回保存的企业登录、按注册项记住拒绝、机密 OAuth 客户端 client_secret_basic/post、配置重载保留合资格连接、mcp_oauth_refresh_coordination 转稳定默认启用）与 MCP 工具规格跨会话共享；恢复线程保留模型设置（服务档位/推理摘要/人格，thread/revert 同步）；NFS 数据库迁移到 DELETE 日志模式的实验命令；统一执行器凭据掩码在快照不可用时回退并警告；保留指令收集与取舍策略分离（RetainedInstructionItem）；Responses Lite 用量重复计数修正；迟到的对话分类按时间戳判过期；关键路径计时工具（六类归因、并行汇合不重复计）；云端目录刷新的韧性（中途认证变化后刷新、失败退避、模型目录保留上一份）。
 - 2026-10-23 基于 commit e0fdd608 补充：网络代理 MITM 钩子新增 aws_sigv4 重签（占位凭据留在工作负载、真实凭据只在可信代理进程，不支持的流式签名拒绝）；受管网络 review_domains 在允许规则命中之上仍要求审批（显式 deny 最优先、批准后 DNS 与本地地址检查照常、执行端缺能力拒绝执行）；MCP 调用的协商式网络策略元数据（只对可信 ChatGPT 来源通告、移除调用方伪造的元数据、解析失败发送前失败）；guardian_recorded_items 把评审记录条目与打断转发给父会话原始事件订阅（不改父历史、不替父完成回合）。
 - 2026-10-24 基于 commit 970111f6 补充：Guardian 评审材料组装收拢到 context composition 与 transcript preparation 两阶段；V2 异步分类一律走 conversation 后端（snapshot 仅测试、旧配置值忽略并告警、缺失即失败）、评审超时可配置；Guardian V3 起步（guardianv3 特性默认关、ext/guardian-v3 crate 提供存储命名空间与 LocalBoard 辅助）；消息板补 upsert_channel、append 静默追加（不订阅不通知，用于记录证据）与分页订阅查询；trace 归因加回合/工具/技能三维、上下文贯穿工具派发、rollout 记录被接受历史并对齐图片内容；环境钩子（环境附件自带钩子配置、钩子在其就绪环境上执行）；NFS 上新 SQLite 库直接 DELETE 日志初始化（免迁移）；本地受管命令接入 SigV4（占位凭据发放、配置凭据掩码、要求 credential_masking）。
+- 2026-10-26 基于 commit 970111f6 补充：Agent 循环节新增端到端流程图（turn/step、插话抢占、等待唤醒），Guardian 节新增把关流程图（内容取自正文已有机制，不引入新事实）。

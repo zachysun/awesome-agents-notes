@@ -76,7 +76,24 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 ## Agent 循环
 
-回合循环本身并不神秘。`agent/conversation_loop.py` 里是一个同步的 while 循环：把对话历史和工具清单发给模型，模型要么回话（回合结束），要么发起工具调用；调用工具，把结果追加进消息列表，再来一轮。默认最多 500 次迭代，带 budget（额度）追踪和随时可打断的检查。工程含量在循环外围。
+回合循环本身并不神秘。`agent/conversation_loop.py` 里是一个同步的 while 循环：把对话历史和工具清单发给模型，模型要么回话（回合结束），要么发起工具调用；调用工具，把结果追加进消息列表，再来一轮。默认最多 500 次迭代，带 budget（额度）追踪和随时可打断的检查。工程含量在循环外围：
+
+```mermaid
+flowchart TD
+    IN["用户消息（执行中途的 /steer 插话落点：<br/>独立 user 消息插在最新工具结果之后，不涂到已保存的工具消息上）"] --> CTX{"会话占用超阈值？"}
+    CTX -->|"网关层超 85% / agent 层超 50%（可按模型覆盖）"| COMP["压缩（唯一被允许改历史的操作）<br/>三步：直接裁老旧工具输出 → 挑压缩边界 → 辅助模型生成结构化摘要"]
+    COMP --> ASM
+    CTX -->|"未超"| ASM["组装请求：对话历史 + 工具清单（toolsets.py 核心名单全量发送）"]
+    ASM --> LLM["发起模型调用"]
+    LLM --> EMPTY{"空响应？"}
+    EMPTY -->|"是"| LADDER["恢复梯子：先重试 → 补一条提醒 → 换续写方式<br/>每级守住角色严格交替"]
+    LADDER --> LLM
+    EMPTY -->|"否"| TOOL{"带工具调用？"}
+    TOOL -->|"是"| RUN["执行工具（local / Docker / SSH / Singularity / Modal / Daytona / Vercel Sandbox 七种终端环境之一）"]
+    RUN --> APP["结果追加进消息列表<br/>两条硬性不变量：不改已有上下文、角色严格交替"]
+    APP --> CTX
+    TOOL -->|"否（纯回复）"| FIN["回合结束"]
+```
 
 **每个阶段一个文件。** 请求前检查、发起 API 调用、处理错误、接住响应、执行工具、处理超长、恢复重试、生成收尾，各自住在 `agent/turn_*.py` 的一个文件里，改"超长处理"只碰 `turn_overflow.py`。回合阶段需要一整个命名系列来管理，这本身就说明生产级 agent 循环的主体不是循环，而是失败处理。举个例子：模型返回空响应时，有一条逐级升级的恢复梯子（先重试，再补一条提醒，再换续写方式），每级都守住"角色严格交替"的底线。
 
@@ -310,3 +327,4 @@ MCP 服务器也可以给自己的工具标价（`tools/mcp_tool_costs.py:1-9`�
 - 2026-10-24 基于 commit c421c930fe 补充：/delegation 命令落地且语义反转——会话级后端覆盖被移除（delegate_task 的 schema 属于缓存提示词，路由与 schema 必须一起切换），/delegation 默认保存到下一会话、--now 才在当前会话下一回合重建工具并重新固定，会话按构建工具时的后端路由（修正 2026-10-23 行中"临时切换"的说法）；终端后端用 uses_host_filesystem 声明文件工具是否走宿主文件系统（子类化本机环境的沙箱后端不再被误判）；浏览器控制收敛（agent-browser 包删除、Chromium 一等公民、browser_session 层统一入口、v52 配置键迁移）。
 - 2026-10-25 基于 commit c75a48b50b 补充：cron 任务的 MCP 允许清单收紧（toolset 名与裸名两种写法等价、配置但禁用的服务器也计入用户选择，不再保底并集所有已启用服务器——此前一个只点一个服务器的任务实际拿到全部）；计划内重启标记收进 restart_notice.py 唯一写入方（Windows CLI 在老进程消失后、新进程启动前盖章，修复 Windows 无 SIGUSR1 导致重启通知整批丢失）。本轮区间其余提交为插件目录（plugin-catalog）的收录与版本固定，不涉及机制，未写入正文。
 - 2026-10-26 基于 commit f219708926 补充：无路由的存储聊天只读打开（旧 cron、subagent、未绑定 API、WebUI、导入行此前报 not_found；导入器改走 session.mutate、新导入可续写）；无人查看会话宽限收尾（最后一个查看者消失后 300 秒安装待决关闭、运行中回合不受打断）；vault 主密钥可选存 OS 钥匙串（迁移带验证）；插件钩子新能力 hold_stream=True（扣住流式回复等 transform_llm_output 改写完再放行）与 ctx.side_question（回合后向会话自己的 agent 追问）。另记未入正文的小项：agent 可挑 ElevenLabs 声音（voice_id 加分页 tts_voices 搜索并入 text_to_speech schema，c975831fbc、f219708926）；网关开始伺服 Webapp（hermes webapp 打开、可对本网络或自有 URL 开放、Nous 登录，fff24cff13、3c92c1a264）；定时器 tick 的 worktree 清扫串行化（2420c0d599）；桌面群聊预览下载按连接限额（1f91da2a27、3221d411ac）。
+- 2026-10-26 基于 commit f219708926 补充：Agent 循环节新增端到端流程图（含压缩触发、空响应恢复梯子、/steer 落点；内容取自正文已有机制，不引入新事实）。

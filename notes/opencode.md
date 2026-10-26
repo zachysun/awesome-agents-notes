@@ -87,7 +87,25 @@ OpenCode 自己不发电，它做电网。发电厂（模型服务商、第三�
 4. 模型回复说"我要调某个工具"时，请求回到工具注册表，先过权限检查，再执行，再截断输出，结果追加进消息列表，然后再次请求模型；
 5. 这个"模型与工具来回"的循环持续到模型给出最终回答；期间 token 计数累计，接近上限就触发压缩。
 
-理解这条链，很多问题就能对号入座：权限在第 4 步执行前检查，压缩在第 5 步计数超限时介入，重试发生在第 3 步的模型请求失败之后。这条链是初版文档成文时的样子；v2 合流后入口换了机制（输入先过收件箱，见下节），核心循环的思路没变，相关代码从旧主包挪进了 `packages/core/src/session/`。
+理解这条链，很多问题就能对号入座：权限在第 4 步执行前检查，压缩在第 5 步计数超限时介入，重试发生在第 3 步的模型请求失败之后。这条链是初版文档成文时的样子；v2 合流后入口换了机制（输入先过收件箱，见下节），核心循环的思路没变，相关代码从旧主包挪进了 `packages/core/src/session/`。把 v2 的收件箱准入也接上，完整路径是：
+
+```mermaid
+flowchart TD
+    U["用户在界面输入"] --> PUB["收件箱挂号 session.inbox.enqueued<br/>持久事实，此时模型还看不见；同一 ID 重试幂等"]
+    PUB --> DEL["投递 session.inbox.delivered：可见消息原子插入会话历史<br/>steer 在下一个安全步边界；queue 等空闲边界"]
+    DEL --> SP["SessionPrompt 接单<br/>prompt / shell / command / cancel 各有入口"]
+    SP --> ASM["组装：系统提示词 + 历史消息 + 工具清单<br/>指令按内容寻址存储、事件只发增量"]
+    ASM --> TRY["物理尝试：向模型发请求（Vercel AI SDK + provider 适配器）"]
+    TRY --> Q{"回复要调工具？"}
+    Q -->|"是"| PERM["权限检查（evaluate：最后一条匹配的规则生效）"]
+    PERM --> EX["执行工具，输出截断（完整原文另存供模型回读）"]
+    EX --> APP["结果追加进消息列表<br/>工具调用在副作用开始前先持久化"]
+    APP --> TRY
+    Q -->|"否"| FIN["最终回答，回合结束"]
+    TRY -.->|"请求失败 / 继续状态被拒 / 流不完整 / 溢出"| RETRY["同一步内再试一次（不重新准入输入）"]
+    RETRY --> TRY
+    CAP["token 计数接近上限"] -.->|"触发压缩"| ASM
+```
 
 ### v2 会话契约：收件箱、执行声明与指令增量
 
@@ -339,3 +357,4 @@ OpenCode 的核心逻辑跑在一个本地 HTTP 服务里（`server/server.ts`�
 - 2026-10-24 基于 commit df6fb9a460 补充：ChatGPT 上下文上限拆成独立提供方插件（openai-context-caps：272k 默认、gpt-6.1-sol 500k）；模型目录排除 realtime/embedding/reranking 三类非对话模型；实验开关 precompute_compaction 更名 background_compaction（正文已随改）；会话转录保留逻辑从 TUI 挪到共享 client 层、后台回合重新填充的非保留会话参与驱逐；MCP 服务器关机并行停止、初始对账不再重复启动已启动的服务器。
 - 2026-10-25 基于 commit 13a615b902 补充：费用与额度成为一等数据（四协议记录厂商上报费用；Console 接入拉取滚动/周/月三窗口额度表与按模型花费；budget exceeded、usage limit 等错误单独归类；TUI 显示限额与会话零花费时的 Go 额度；额度数据不进消息与会话记录）；GPT-Live 经 Console 连接提供、不需用户自己的 OpenAI key；插件激活前每步与每次工具调用等待激活完成；MCP 单个畸形工具跳过不再拖垮整台服务器；工具 schema 转换与 prompt hook 模型解析各做一次、git 发现按指纹缓存（性能）。
 - 2026-10-26 基于 commit 01cd723db9 补充：会话媒体按内容寻址存入 blob 表（media:<hash> 引用去重，写入走 experimental.media_blob 开关默认关闭）；删除从未启用的 session_pending 表并固定历史压缩边界；正文改写一处变动：models-snapshot CI 工作流连同 stats/containers 工作流与 OpenCode GitHub Action 一并移除（5ae201c304），快照成为打进程序的静态文件、源码注释仍指向已不存在的刷新脚本。另记小项：agent 与 provider 列表等待插件就绪（61163cb134）、断线期间错过的运行中会话补注册（f6991636a5）、目录更新仅在内容变化时发布（01cd723db9）、不持久的事件跳过编码（2d91ed57ae）、CLI 关闭带 10 秒期限（b6cbbd7646）。
+- 2026-10-26 基于 commit 01cd723db9 补充：一次请求的完整路径节新增端到端流程图（收件箱挂号与投递、步内重试、压缩触发；内容取自正文已有机制，不引入新事实）。
