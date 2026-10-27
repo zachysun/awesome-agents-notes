@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `6c384aa3`（2026-10-27） |
+| 笔记基准 | commit `85c2ee3e`（2026-10-28） |
 
 Pi 是 earendil-works 开源的 AI agent 工具包，TypeScript 写的，monorepo（一个仓库里放多个软件包）组织在 `packages/` 下，现在 11 个包，GitHub 上 star 数很高（旧笔记记录为 10.8 万）。它最出名的产品是 `pi` 这个终端编码 agent——在命令行里对话、读写代码的 AI 助手，同类有 codex、opencode、Claude Code。但它的定位不止于此，README 里的词是 "agent harness"（套件/外壳），意思是给你一套搭 agent 的现成骨架：从统一大模型接口、agent 运行时、终端界面库，到持久化运行时，一层一层都能单独拿出来用。
 
-这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `6c384aa3`（2026-10-27）。
+这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `85c2ee3e`（2026-10-28）。
 
 ## 它要解决什么问题
 
@@ -116,7 +116,7 @@ SQLite 驱动住在 chord 里（`@earendil-works/chord/sqlite`），目前只有
 
 提交模型保证了恢复的起点：只有已提交的状态可见，进程重启后重放日志就是完整事实。在此之上有三套机制。
 
-第一，任务状态机是显式的，六态：pending / running / waiting / sleeping / completing / terminal（packages/durable/src/types.ts:599-643）。进程崩溃时正在跑的任务，`Harness.open` 时翻回 pending 重跑。但这里有个陷阱：任务代码本身有 bug 时，会"重启→重跑→再崩"无限循环。pi 的解法是崩溃循环有上限（提交 a30c2a8）：给上次崩溃时正在跑的任务记 `restarts` 计数，达到 `settings.restartLimit`（默认 5，harness/agent.ts:56-60）且未被请求中止的任务停驻为 blocked，上报 `task_parked`，错误消息直说"被切断 N 次没有进展；停驻直到 retryTask()"（scheduler.ts:406-412）；`retry()` 由人显式调用，清零计数恢复调度。判定留了余地：运行中、持有结果、被请求中止的任务永不判 blocked（scheduler.ts:448-453），每轮调度复查停驻任务（restartLimit 可能上调）。计数、停驻、人工恢复、复查，这一套缺一环都防不住无限循环。
+第一，任务状态机是显式的，六态：pending / running / waiting / sleeping / completing / terminal（packages/durable/src/types.ts:599-659）。进程崩溃时正在跑的任务，`Harness.open` 时翻回 pending 重跑。但这里有个陷阱：任务代码本身有 bug 时，会"重启→重跑→再崩"无限循环，而每次重跑都可能产生新的副作用。pi 的解法是崩溃循环有硬性上限（提交 a30c2a8）：给上次崩溃时正在跑的任务记 `restarts` 计数，达到 `settings.restartLimit`（默认 5，harness/agent.ts:57-61）就不再重跑。触顶后的处置后来换过一种形态：最初是"停车"——任务停驻为 blocked，等人显式调用 retryTask() 才恢复；现在改为**可见地结束**（提交 b3a29f11）——任务以明确的失败结果收场（工具调用返回错误结果、压缩报 compactionFailure、运行以 `runFailure` 的 `restart_limit` 结束、扩展类型的任务记为 faulted），并上报 `task_interrupted`（`types.ts:157-183`）；要再跑就重新提交，而不是从一个需要人记得的停驻态里捞回来。宿主死亡时在途的请求与轮询也计入同一套重试策略：在途的那次算一次失败尝试，走同样的退避、保留已完成的部分，醒来后继续轮询同一个延迟句柄；重试用尽，运行以 `runFailure` 的 `interrupted` 收场——"进程死过"在任务记录里留下的是次数与原因，而不是一个查无对证的中断。
 
 ```mermaid
 stateDiagram-v2
@@ -129,9 +129,7 @@ stateDiagram-v2
     sleeping --> running: 到点 / 宿主唤醒
     completing --> terminal: 完成
     running --> pending: 进程崩溃，重启翻回重跑
-    pending --> blocked: 崩溃计数达 restartLimit（默认 5）
-    running --> blocked: 同上
-    blocked --> pending: retry 由人显式调用、计数清零
+    running --> terminal: 崩溃计数达 restartLimit（默认 5），task_interrupted 可见结束
     terminal --> [*]
 ```
 
@@ -233,6 +231,10 @@ chord 解决的问题：一个功能（比如"显示 agent 正在做什么"）�
 
 一份提交落库之后、各方看到之前，还有一条发布路径要定：谁先看到、谁后看到、观测自己坏了怎么办。这条路径现在收在 `Storage.commit` 的 `adopt` 调用里（提交 8b0caefc）：遥测事件、durable 自己的观察者（文档监视、会话视图、任务图、调度器、等待）与宿主 `subscribeCommits` 的派发（晚一个微任务）都在这一处发出，赶在提交触发的每个等待与中止之前——监听方因此不会碰上"注册晚了、错过了开头"的问题；被存储拒绝的提交在会话判死之前也先发布，抛错的遥测适配器记为 `host_error` 而不是让提交失败——观测通道自己坏了，不该连累业务提交。变更的形状对应另一问：监听方怎么知道"源没了"？chord 的 watch 监听器改收一个变更对象 `{ value, ops, retired }`（native 版只有 `{ value }`），源的废弃从"监听到此为止"变成变更里的一个标志——关心这件事的监听方照常收到最后一帧，不需要另设通知通道；durable 的文档监视跟随文档的地址，任务文档的监视在其废弃调用之后结束。watch 之下垫了一层同步观察者（`observeDoc` / `observeConversation` / `observeTaskGraph`），上面的监视都建在它们之上。
 
+失败本身也是一次变更——这是 watch 词汇的最后一个统一（提交 5f312dac）：监听器收到的调用带类型标签，正常变更 `{ kind: "value", value, ops, retired }`，失败 `{ kind: "failed", error }`；可恢复的失败不关监听，下一个值照常到达，只有不可恢复的失败才以对应类型的 `WatchEnd` 收尾，被中止的上下文以 `aborted` 结束。durable 一侧的观察者与报告随之共用同一套形状：观察者收 `advance(call, ctx)` 与 `end(end)`，报告带 `report.kind` 与 `report.error`，`subscribeCommits` 更名 `observeCommits`，`session_failed` 更名 `storage_failed`，压缩失败与压缩状态标明各自的触发者，文件监视以 `stop(ctx)` 结束——两套系统一套词汇，监听方不必为"值、失败、结束"各学一种回调形状。存储格式不变（pi.live 版本 2 带迁移）。
+
+会话历史的读取也有了自己的窗口形状（提交 f3255de7）：`ConversationView.entries` 是感知分叉历史的窗口，带 `before` 指针；`conversation.watch(ctx, { from, min, max })` 与 `observeConversation` 收的就是这个窗口，`ConversationTranscript` 再把窗口合并进客户端的转录——带缺口标记，`loadEarlier` 向前加载、`fillGap` 补缺口、`resume` 续接。此前客户端要自己从提交流里拼会话历史，现在"取一段历史"与"监视一段历史"用同一套窗口参数表达。运行没能给出答案时，`pi.live.runFailure` 说明原因。旧的 `watchEvents` 事件通道整个移除，迁移指南写在变更日志里。
+
 ### codemode：模型写代码、代码调工具
 
 codemode 是沙箱化的 JavaScript 执行环境，规则只有一条：脚本唯一的能力是调用注入进来的工具。沙箱可以跑在 worker 线程、调用者线程，或经 RPC 跑在另一个 isolate（独立运行实例）——`/cloudflare` 入口把沙箱做成远程 Durable Object，脚本永不占用调用者线程；`/portable` 入口不带 Node 依赖，浏览器和边缘环境都能用。纯计算脚本受中断额度约束，排空 promise 队列时也轮询，"从不让出"的死循环同样能被打断。durable 侧的 codemode 把代码模式接上了主轴：脚本确定性运行，每个工具调用的结果交付前先写入日志（journal），重跑时从存好的数据重启脚本、按序交付日志结果、日志里没有的调用先扣住等重放结束——脚本也服从"重启能接着跑"。偏离（divergence）、模块版本或沙箱指纹变化、超过期限，都以存好的错误结束调用。coding-agent 侧跑脚本的 worker 线程有进程级上限，默认 2 个（`DEFAULT_MAX_CODEMODE_WORKERS`，`extensions/codemode/execute.ts:58`），`PI_CODEMODE_MAX_WORKERS` 环境变量可以调高，每次调用时现读，一个进程里跑很多会话的 SDK 宿主可以运行时设置；worker 满了的脚本按到达顺序排队等空位，而不是立刻失败——等待计入脚本自己的 `timeout_ms`、尊重 abort、单独封顶 60 秒（`CODEMODE_WORKER_WAIT_MS`，提交 885a564）。
@@ -294,3 +296,4 @@ evals 是行为评测——用真实任务考察 agent 表现，不是玩具基�
 - 2026-10-26 基于 commit d5b3de22 补充：Agent Loop 节新增端到端流程图与 durable 阶段决策图，持久化节新增任务六态状态图（内容取自正文已有机制，不引入新事实）。
 - 2026-10-27 基于 commit 6c384aa3 补充：durable 的提交发布挪进 Storage.commit 的 adopt 内（遥测、观察者与宿主派发赶在等待与中止之前，被拒提交在判死前也发布，抛错的遥测记 host_error）；chord watch 监听器改收 { value, ops, retired } 变更对象（废弃是标志不是终点）、durable 文档监视跟随地址、watch 垫在同步观察者之上；模型目录加入 GPT-6.1 Terra；不可信 URL、终端文本与流式数据的处理收紧；工具搜索在查询恰好是工具名时把该工具排前（ae823bc0）。
 - 2026-10-27 文体修订：按"段落以问题为单位"的标准改写正文——变更清单式、时间线串联的段落改为问题立意（提交号降为注脚），过长段落按主题拆分；不引入新事实，机制描述与引用保持原状。
+- 2026-10-28 基于 commit 85c2ee3e 补充：崩溃循环触顶改为可见结束（task_parked/retryTask/block 移除，任务以工具错误、compactionFailure、runFailure restart_limit 或 faulted 收场并报 task_interrupted，状态图同步更新）；宿主死亡时在途请求计一次重试尝试、重试用尽以 runFailure interrupted 结束；watch 词汇统一（监听调用带 kind 标签、可恢复失败不关监听、observeCommits/storage_failed 更名、观察者与报告共用一套形状）；会话历史窗口（ConversationView.entries 感知分叉带 before、conversation.watch 收窗口参数、ConversationTranscript 合并缺口转录、watchEvents 移除）；另记小项：LiteLLM 上下文溢出按错误识别（d3398f82）、chord SQLite 预编译语句缓存设上限（db14038b）、默认 openai 提供方定为 gpt-6.1-sol（f049787d）、会话记忆写失败时保持与文件一致（807a5c05）、GPT-5.4/5.5 工具改顶层声明（81d6759f）、SqliteExecutor.runCounted（8025c414）。
