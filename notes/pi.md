@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `85c2ee3e`（2026-10-28） |
+| 笔记基准 | commit `c466a359`（2026-10-29） |
 
 Pi 是 earendil-works 开源的 AI agent 工具包，TypeScript 写的，monorepo（一个仓库里放多个软件包）组织在 `packages/` 下，现在 11 个包，GitHub 上 star 数很高（旧笔记记录为 10.8 万）。它最出名的产品是 `pi` 这个终端编码 agent——在命令行里对话、读写代码的 AI 助手，同类有 codex、opencode、Claude Code。但它的定位不止于此，README 里的词是 "agent harness"（套件/外壳），意思是给你一套搭 agent 的现成骨架：从统一大模型接口、agent 运行时、终端界面库，到持久化运行时，一层一层都能单独拿出来用。
 
-这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `85c2ee3e`（2026-10-28）。
+这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `c466a359`（2026-10-29）。
 
 ## 它要解决什么问题
 
@@ -104,7 +104,7 @@ pi 对提示缓存（prompt cache，厂商按请求前缀复用计算结果来�
 
 ### 存在哪：一排可替换的后端
 
-durable 的后端有一排，都实现同一个 `Storage` 接口（`packages/durable/README.md:763-767`）：内存（什么都不持久化）；SQLite（版本化迁移、基准测试，表可加前缀做命名空间化让多实例共用一个文件；WAL 模式配 `synchronous = NORMAL`，提交能扛住进程崩溃，但断电或宿主机故障可能丢最新一笔）；JSONL（按行追加，适合小规模、可整目录拷贝的部署；整份历史同时留在内存里，长跑 agent 该用 SQLite）；IndexedDB（浏览器专用，`IndexedDbStorage.open(name)` 把全部数据放进一个 IndexedDB 数据库，同一时刻只能有一个持有者，README 要求在它的整个生命周期内持有一把 Web Lock，而不是在多个标签页或 worker 里竞争打开，需要长期保留时调 `navigator.storage.persist()`）；Cloudflare Durable Object（提交就是它的存储事务，支持边缘部署）。JSONL 的回收机制有个关键设计：清理不再需要的任务文档、只留当前版本 base 时，不是想删就删，而是以**已提交的标记**授权——只有提交确认过的记录才能清理，清理前先刷主文件保证标记不丢；刷写失败就跳过回收，但绝不让已发布的提交失败。破坏性操作的授权始终挂在事务边界上。
+durable 的后端有一排，都实现同一个 `Storage` 接口（`packages/durable/README.md:763-767`）：内存（什么都不持久化）；SQLite（版本化迁移、基准测试，表可加前缀做命名空间化让多实例共用一个文件；WAL 模式配 `synchronous = NORMAL`，提交能扛住进程崩溃，但断电或宿主机故障可能丢最新一笔）；JSONL（按行追加，适合小规模、可整目录拷贝的部署；整份历史同时留在内存里，长跑 agent 该用 SQLite）；IndexedDB（浏览器专用，`IndexedDbStorage.open(name)` 把全部数据放进一个 IndexedDB 数据库，同一时刻只能有一个持有者，README 要求在它的整个生命周期内持有一把 Web Lock，而不是在多个标签页或 worker 里竞争打开，需要长期保留时调 `navigator.storage.persist()`）；Cloudflare Durable Object（提交就是它的存储事务，支持边缘部署）。JSONL 的回收机制有个关键设计：清理不再需要的任务文档、只留当前版本 base 时，不是想删就删，而是以**已提交的标记**授权——只有提交确认过的记录才能清理，清理前先刷主文件保证标记不丢；刷写失败就跳过回收，但绝不让已发布的提交失败。破坏性操作的授权始终挂在事务边界上。这一排里还有一个实验性的成员：跑在下一代 Chord（v2）store 之上的 `StoreStorage`（导出名 `@earendil-works/pi-durable/storage/store`，源码在 `packages/durable/src/storage/store/`，导出声明见 `packages/durable/package.json:87-89`），它过的是同一套一致性测试套件（`npm run test:store`）。它是 Chord v2 与 durable 对齐的产物，见下文「chord：应用组合运行时」。
 
 SQLite 驱动住在 chord 里（`@earendil-works/chord/sqlite`），目前只有驱动，没有复制（把一份数据库的变更连续送到另一处副本）。复制试过两条路，HEAD 都不含。一条是按 SQLite 页复制：独占操作 `NodeSqliteDatabase.exclusive()`、复制连接包装器、WAL 读取器、页校验和、段容器（提交 48c8f32、4759f09），提交 89e3095 整体移除，说明里给的理由是会话同步要复制的是 pi-durable 的提交而不是 SQLite 页，这些部件没有使用者。另一条就是按提交日志复制存储（4c25119，给各后端加导出接口、`sync/` 下放日志与复制存储），同日回退（cae9fd2）。主轴说进程随时会死，存储在别处有副本是顺着这条路往下走的方向；按 89e3095 的说明，方向已从页级改成提交级，但 HEAD 里还没有可用的实现。
 
@@ -139,9 +139,11 @@ stateDiagram-v2
 
 ### 在哪跑：可替换的执行环境
 
-工具干活的环境被抽象成 `ExecutionEnv` 接口：位置式读文件（不跟符号链接）、分页列目录、不经 shell 的 argv 数组执行、目录监视（网络文件系统自动退到轮询）、伪终端（pty，vim 这类全屏交互程序因此能用，Unix 专用）、整棵文件树列举。贯穿的关键词是**有界**：读工具一次遍历定位行段、shell 输出只保留尾部窗口并报告准确的跳过计数、进度提交节流可配置。read 工具读图片返回图片块加说明，限额取会话模型自己的设置；图片必须整体读，读的途中文件变了就整张重读——跟可以边长边读的文本文件不同，这条边界写进了接口语义。
+工具干活的环境被抽象成 `ExecutionEnv` 接口：位置式读文件（不跟符号链接）、分页列目录、不经 shell 的 argv 数组执行、目录监视（网络文件系统自动退到轮询）、伪终端（pty，vim 这类全屏交互程序因此能用，Unix 专用）、整棵文件树列举。贯穿的关键词是**有界**：读工具一次遍历定位行段、shell 输出只保留尾部窗口并报告准确的跳过计数、进度提交节流可配置。read 工具读图片返回图片块加说明，限额取会话模型自己的设置；图片必须整体读，读的途中文件变了就整张重读——跟可以边长边读的文本文件不同，这条边界写进了接口语义。扩展经 `pi.exec` 跑命令也有同样的边界（`packages/coding-agent/src/core/exec.ts`）：输出上限 `maxBuffer` 默认取 256 MiB 与运行时字符串上限中较小的一个（`exec.ts:10`），非法的显式上限在启动命令之前就拒绝；输出超限时命令被终止，结果带 `truncated: true`、`killed: true` 与非零退出码（`exec.ts:37-39`），输出管道随之关闭，免得命令的后代进程把调用方挂住，不完整的 UTF-8 尾字节丢弃；无视 SIGTERM 的子进程会升级到 SIGKILL。
 
 环境可以搬到别的机器：pi-env 包把执行环境放到 SSH 远端（`RemoteExecutionEnv`，结果语义与本地一致，靠一个 Rust 守护进程支撑，覆盖四大平台）。验证方式是 `packages/durable/test-workers/` 用 Cloudflare 官方运行时 workerd 跑真实的 Durable Object 唤醒测试（提交 ea7c648）——测试环境和目标宿主一致，模拟环境全绿不代表真机能过。
+
+远端守护进程自己被终止时，它起的命令不能变成没人管的进程（提交 b6d5c2ec）。此前 `Connection.close()` 结束标准输入后立刻发 SIGTERM，守护进程不处理这个信号、死在"输入结束就清理全部命令"的逻辑之前，运行中的命令被过继给 init；现在守护进程在启动任何线程之前阻塞 SIGTERM、SIGINT、SIGHUP，在自己的线程上等待它们（`packages/env/daemon/src/sys/unix.rs:286-302`），退出前杀掉它启动的每一个进程组——协议文档把"连接断开或守护进程停止即停止远程命令"写成了保证（`packages/env/docs/protocol.md:65-66`）；Windows 上由 job object 随守护进程一起杀命令。辅助线程起不来的情况也有了明确的失败形状（提交 92c1da1f）：容器的 cgroup `TasksMax` 或 `RLIMIT_NPROC` 触顶时 `thread::spawn` 会 panic，exec 请求收不到回复、cancel 与 kill 无人接、子进程继续跑；现在改用返回 `io::Result` 的 `thread::Builder::spawn`，失败即停止、中断已起的读取线程、杀进程组、回收子进程，以 `spawn_error` 回复（`packages/env/daemon/src/exec.rs:279`）。
 
 ## 安全与审批
 
@@ -213,6 +215,10 @@ flowchart LR
     P3 -->|"工具交接 handoff"| HO["重置条目先于排队项写入<br/>回合在新上下文继续"]
 ```
 
+durable 给一次运行的"能跑多久、怎么续、什么时候拒"各定了一条规矩。回合上限存在会话上：`agent.maxTurns` 与模型设置一样由子会话与分叉继承（`packages/durable/docs/spec.md:556-599`），一次运行的工具轮次超过它就以 `runFailure` 结束，宿主从 `pi.live.runFailure` 得知原因——带坏工具的运行不会无限转下去。续跑有正式入口：`{ type: "continue" }` 提交（`packages/durable/src/types.ts:573`）让空闲会话不带用户消息、就着现有上下文再跑，回合额度重新计满（`spec.md:381-388`）；它从不排队，运行中再提一个 continue 直接抛 `ConversationBusy`，答案已经给出后再提则无事可答、不发模型请求就结束（示例 `packages/durable/test/examples/33-turn-limit-and-continue.ts`）。不想让一次输入意外拉起运行的宿主，可以给输入标 `whenIdle: "reject"`：会话没有运行时以 `ConversationIdle` 拒绝且不写任何记录（`spec.md:2865`、`:2880`），有运行时 `whenBusy: "steer"` 照常转向。准入也可以放进宿主自己的事务：`Conversation.submit(tx, draft)` 在调用方的提交里完成准入并返回提交 ID（提交 cc9c5231），宿主的校验、业务写入与"这次输入已受理"要么一起持久、要么一起不持久；准入必须发生在该提交第一次写表之前、每个提交至多一次，违者在所有路径上抛 `ReadAfterWrite`，别的会话或包装过的事务一律拒绝。
+
+生成阶段的钩子表也补齐了（`spec.md:3294-3300`）：`afterTool` 对每个工具任务的结果走替换链（`spec.md:3371`），`afterTools` 与 `afterRun` 是全体观察者，`beforeCompact` 以第一个作出的决定为准。模型调了清单之外的工具、或运行时解析不到实现时，这次调用以带 `tool_unavailable` 诊断的错误工具结果收场、运行继续，模型可以对错误作出反应（`spec.md:966-969`）。`afterRun` 能在运行答完之后以 `runEndTask` 申请持久任务（提交 7e15f960）：答案先提交、输入先结算，生成阶段才在 finish 阶段把这些任务作为子任务创建、在 drain 阶段等它们到终态——`pi.live.run` 因此在它们结束前保持忙碌，Stop 连它们一起中止，崩溃后照常恢复，排队的输入要等它们结束才投递。钩子与任务读历史有了不随压缩变化的基准：`HookApi.entry()`/`entries()` 与 `TaskRuntime.entries()` 读会话的原始提交历史（`spec.md:2151-2152`、`:3316-3317`），压缩从不改动条目序列，以条目 ID 为界的区间在压缩前后、重跑时读到同样的内容（`spec.md:3414`）。
+
 ## 特色模块
 
 以下几个包相对固定问题是 pi 的特色项，也是它作为工具包最独特的部分。
@@ -234,6 +240,8 @@ chord 解决的问题：一个功能（比如"显示 agent 正在做什么"）�
 失败本身也是一次变更——这是 watch 词汇的最后一个统一（提交 5f312dac）：监听器收到的调用带类型标签，正常变更 `{ kind: "value", value, ops, retired }`，失败 `{ kind: "failed", error }`；可恢复的失败不关监听，下一个值照常到达，只有不可恢复的失败才以对应类型的 `WatchEnd` 收尾，被中止的上下文以 `aborted` 结束。durable 一侧的观察者与报告随之共用同一套形状：观察者收 `advance(call, ctx)` 与 `end(end)`，报告带 `report.kind` 与 `report.error`，`subscribeCommits` 更名 `observeCommits`，`session_failed` 更名 `storage_failed`，压缩失败与压缩状态标明各自的触发者，文件监视以 `stop(ctx)` 结束——两套系统一套词汇，监听方不必为"值、失败、结束"各学一种回调形状。存储格式不变（pi.live 版本 2 带迁移）。
 
 会话历史的读取也有了自己的窗口形状（提交 f3255de7）：`ConversationView.entries` 是感知分叉历史的窗口，带 `before` 指针；`conversation.watch(ctx, { from, min, max })` 与 `observeConversation` 收的就是这个窗口，`ConversationTranscript` 再把窗口合并进客户端的转录——带缺口标记，`loadEarlier` 向前加载、`fillGap` 补缺口、`resume` 续接。此前客户端要自己从提交流里拼会话历史，现在"取一段历史"与"监视一段历史"用同一套窗口参数表达。运行没能给出答案时，`pi.live.runFailure` 说明原因。旧的 `watchEvents` 事件通道整个移除，迁移指南写在变更日志里。
+
+chord 的下一代（Chord v2）正在同一个包里重造，入口是 `packages/chord/src/next`、导出名 `@earendil-works/chord/next`，还是实验品——每个切片都会改 API（提交 93029a0f）。它要解决的问题是**重载不重启**：插件的新代码在运行中的应用里接管，宿主（host，一个逻辑身份加一个世代号）继续活着，数据、打开的连接与进行中的工作尽量保住；重载是显式动作，保存文件不触发。设计规则收在 `packages/chord/docs/next/design.md`（决定的来龙去脉在同目录 decisions.md，切片计划在 slices.md）：每样东西恰好有一个属主对象，数据由属主持有、规则由属主的方法执行；工厂只声明、由 Chord 激活；操作系统级的资源只由拥有它的对象打开与关闭，别的插件要经属主的方法；一次调用出错的样子就是"断线"——不设请求号框架，引用由持有方自己重新拿。与 durable 的对齐是明文规则：凡是 Chord 与 durable 解决同一个问题的地方（提交、行、加载、存储错误、监听），用同一套规则与机制。已经建成的切片里，两块最能说明方向。一是 durable 的存储搬到了 v2 的 store 上（切片 6b，提交 14b4c56e）：`StoreStorage` 过 durable 的存储一致性套件，store 因此有了属主命名与认领、单一 ID 分配器、三档历史（none / latest / rewindable）与按时间点读取、归档修订与批量应用；持久化任务以"记录加状态"存进属主的 store，重启时作为 durable 任务接续，中止也持久化；`self.follow` 把 durable 的同步观察者当作 Chord 的数据源。二是注册表（切片 8，提交 6eb99ad6）：`defineRegistry` 发一个共享令牌，每个宿主只有一个提供方（`host.serve(R, { compose, accepts })`），贡献可以来自插件的一瓣（facet）或宿主生命周期对象，按变更批次惰性组装，失败的条目出局、保留上一份好值，旧版本读者经 `accepts[old].value` 映射；`host.root` 给对象之外的代码一个调用作用域，在 settle、中止、关闭时封存。
 
 ### codemode：模型写代码、代码调工具
 
@@ -297,3 +305,4 @@ evals 是行为评测——用真实任务考察 agent 表现，不是玩具基�
 - 2026-10-27 基于 commit 6c384aa3 补充：durable 的提交发布挪进 Storage.commit 的 adopt 内（遥测、观察者与宿主派发赶在等待与中止之前，被拒提交在判死前也发布，抛错的遥测记 host_error）；chord watch 监听器改收 { value, ops, retired } 变更对象（废弃是标志不是终点）、durable 文档监视跟随地址、watch 垫在同步观察者之上；模型目录加入 GPT-6.1 Terra；不可信 URL、终端文本与流式数据的处理收紧；工具搜索在查询恰好是工具名时把该工具排前（ae823bc0）。
 - 2026-10-27 文体修订：按"段落以问题为单位"的标准改写正文——变更清单式、时间线串联的段落改为问题立意（提交号降为注脚），过长段落按主题拆分；不引入新事实，机制描述与引用保持原状。
 - 2026-10-28 基于 commit 85c2ee3e 补充：崩溃循环触顶改为可见结束（task_parked/retryTask/block 移除，任务以工具错误、compactionFailure、runFailure restart_limit 或 faulted 收场并报 task_interrupted，状态图同步更新）；宿主死亡时在途请求计一次重试尝试、重试用尽以 runFailure interrupted 结束；watch 词汇统一（监听调用带 kind 标签、可恢复失败不关监听、observeCommits/storage_failed 更名、观察者与报告共用一套形状）；会话历史窗口（ConversationView.entries 感知分叉带 before、conversation.watch 收窗口参数、ConversationTranscript 合并缺口转录、watchEvents 移除）；另记小项：LiteLLM 上下文溢出按错误识别（d3398f82）、chord SQLite 预编译语句缓存设上限（db14038b）、默认 openai 提供方定为 gpt-6.1-sol（f049787d）、会话记忆写失败时保持与文件一致（807a5c05）、GPT-5.4/5.5 工具改顶层声明（81d6759f）、SqliteExecutor.runCounted（8025c414）。
+- 2026-10-29 基于 commit c466a359 补充：Chord v2 开工（packages/chord/src/next，重载不重启、单一属主、与 durable 对齐；切片 6b 的 StoreStorage 让 durable 存储跑在 v2 store 上并列入后端一排，切片 8 的注册表与 host.root）；durable 运行规矩（会话级 maxTurns、continue 提交、whenIdle reject、submit(tx, draft) 提交内准入）与生成钩子（afterTool 替换链、afterRun 申请 runEndTask、tool_unavailable 错误结果、entry/entries 读不随压缩变化的原始历史）；pi-env 守护进程被终止时杀掉自己的命令、线程起不来以 spawn_error 回复；pi.exec 输出上限 256 MiB；另记小项：pi-ai 模型目录改由每提供方一个 defineProvider() 定义文件加 models.dev v2 构建（2e0f175b）、OpenRouter ~anthropic 别名走 Anthropic Messages（44f6851b）、扩展 changelog（b4b72a35）、提示词模板文档评测（9628c848）、同一工具集重设时保持活跃工具顺序（b9e3eef6）、工具描述概括 union 与多行 codemode 输出类型（f6ee9ce9）、启动时工作目录被删报告而非崩溃（88ffcdc7）、stripAnsi 去私有参数 CSI（b5fc6dc8）、裸 URL 止于 CJK 标点（fa168515）、pi.live v3 迁移为缺 turns 的运行补 0（018fdcf4）、Delta tracker 不用 WeakRef（a9228305）。

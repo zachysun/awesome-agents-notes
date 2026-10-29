@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Rust |
-| 笔记基准 | commit `3e9264fb`（2026-10-27） |
+| 笔记基准 | commit `f5f1d598`（2026-10-29） |
 
 Codex 是 OpenAI 开源的编码 agent（agent 指能自主多步行动、调用工具完成任务的 AI 程序），主体用 Rust 编写，跑在用户自己的电脑上：终端里敲 `codex` 进入交互界面，让它读代码、改文件、跑命令、跑测试。规模不小：`codex-rs/` 目录下一百多个 crate（Rust 的模块/零件单位），四千六百多个 Rust 源文件，近两百万行代码（含测试）。在同类工具（Claude Code、opencode、Gemini CLI 这类终端编码 agent）里，Codex 的位置是官方出品、生产级强度的参考实现：一套 Rust 核心同时支撑终端界面、IDE 插件、桌面应用和云上服务，安全机制和上下文管理都做得非常系统。
 
-这份笔记按问题组织，不按 Codex 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `4ca8e7aff` 前后（2026-09-21），跟进到 commit `cb66dbec`（2026-10-28）。
+这份笔记按问题组织，不按 Codex 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `4ca8e7aff` 前后（2026-09-21），跟进到 commit `f5f1d598`（2026-10-29）。
 
 ## 它要解决什么问题
 
@@ -148,7 +148,7 @@ MCP（Model Context Protocol，模型上下文协议）是一个开放标准，�
 
 **防线自身也有检查（sandbox integrity，2026-10-07）。** 沙箱能起作用，依赖一批"包含依赖文件"（containment dependencies，构成防线的文件本身，比如沙箱执行器、策略配置）不被篡改；但如果文件系统策略恰好允许写这些文件所在的路径，防线就有被从内部架空的隐患。检查的问法很直接：按当前生效的策略，防线上每个关键文件是不是还写不进去？实现上按平台各配一个后端（macOS 用 Seatbelt，把 deny 通配当原生模式处理、不需要额外扫描快照；Linux 用 bubblewrap；Windows 做 MXC 准备），目标、写根、只读豁免全部先解析符号链接再比对，deny 通配按解析后的真实内容匹配；macOS 后端把 Codex 自己的可执行文件和系统的 sandbox-exec 都列进关键依赖清单——防线的定义从"配置"扩大到了"执行沙箱的那几个程序本身"。检查跑在阻塞线程上、等待限五秒，结果只作观测（不影响命令执行），指标记录结果与耗时、标签里不含任何文件系统路径。
 
-执行服务本身也有边界：exec-server（命令执行服务）收到的入站请求，无论走哪种传输，编码后的消息都限制在 8 KiB 以内；进程输出、退出、关闭、HTTP 请求体这类"结果型"通知放宽到 2 MiB；携带链路追踪信息的请求头 `tracestate` 超过 512 字节就直接丢弃（保留主追踪标识）。给"进来的请求"和"回来的结果"划大小上限，是防止恶意或出错的对端把执行服务内存撑爆的第一道闸。
+执行服务本身也有边界：exec-server（命令执行服务）收到的入站请求，无论走哪种传输，编码后的消息都限制在 8 KiB 以内；进程输出、退出、关闭、HTTP 请求体这类"结果型"通知放宽到 2 MiB；携带链路追踪信息的请求头 `tracestate` 超过 512 字节就直接丢弃（保留主追踪标识）。给"进来的请求"和"回来的结果"划大小上限，是防止恶意或出错的对端把执行服务内存撑爆的第一道闸。执行服务现在也能单独成一个可执行文件：`codex-exec-server`（提交 a9ea49e7），启动逻辑抽进 `codex-exec-server-cli`、与 `codex exec-server` 子命令共用，执行器参数、认证、配置覆盖与沙箱辅助进程的分派两边一致，`codex-exec-server --listen stdio` 即可运行。它随 CLI 与 app-server 的发布包一起发（`codex-package.json` 的 `execServer` 字段公布它的路径，安装器按元数据检查、旧包照常接受），发布流程里构建并签名，macOS 执行器用空的 entitlements；npm 包不含它，受 npm 的包体积上限所限（提交 b91f2515；中间一度停发，7ac60816）。
 
 ### 审批策略
 
@@ -197,6 +197,8 @@ flowchart TD
 **subagent 的协作调用也进了评审范围。** spawn_agent、send_message、followup_task 这类多 agent 调用是模型驱动的动作，可以改变状态（拉起执行者、投递消息、追加任务），此前却不在 Guardian 的评审清单上。`GuardianNativeMultiAgentHistory` 特性启用后，包装过的 Multi-Agent V2 调用要求过 Guardian 评审（提交 824b7666），并进入异步 native 工具评分范围——尊重配置的多 agent 命名空间、配置跨恢复保留（提交 a5ef02e5、ed1b92fa）；这些调用在评审历史中按原样保留（提交 eec8bde1）。围栏的清单跟着能力走：每多一类能改变世界的动作，评审清单就该多一类。
 
 Guardian V3 开始起步：`guardianv3` 特性已注册、默认关闭（`features/src/lib.rs:906`），新 crate `ext/guardian-v3` 目前只提供两件辅助——配置 guardian 的存储命名空间、为主线程的会话 ID 构建一个本地消息板（LocalBoard，提交 f71c6afc、bca6cff1）。配套的拼图在消息板一侧：新增的 `append` 写入不订阅作者、不通知任何订阅者，提交说明里写明的用途就是"往板上记录证据"（见"工具系统"）——两处改动各自独立，指向同一类用法。
+
+评审还有几种形态与几处边界。**不发布也能评**：`ReviewInput`（`core/src/guardian/review.rs:163`）把一份审批请求与捕获到的父历史、评审上下文打成一包，它的 `assess_isolated`（`review.rs:202`）起一个全新的评审者给出结论，而不发布一次现场审批——用途是对准备好的动作做隔离评估，评审者只看到捕获时的历史，捕获之后追加的指令不进去（提交 3da7de59）。**模型自己的评估也能进响应流**：模型响应元数据里的 Guardian 评估被解码成带类型的 `GuardianAssessment` 事件（`codex-api/src/guardian_assessment.rs:12`，带 `response_id`、`item_id`、`requires_review`），经 SSE 与 WebSocket 送到请求范围的扩展拦截器；它不进会话历史，也不授权任何工具执行（提交 fc916a22）——一条"值得看看"的提示，不是放行凭证。**stdin 评审看得见终端是怎么起的**：`write_stdin` 的审批请求此前缺少启动这个终端的命令，评审者只看到一段要写入的输入；现在 `original_command` 随审批请求与动作 JSON 一起带上（描述的是原始启动命令，不是终端当前状态），且不计入 stdin 审批 8,000 字节的大小检查，启动上下文再长也不挤占输入、权限细节与审批理由的空间（提交 7c11b807）。**评审者选谁**按模型目录的来源决定：目录条目标记为 `Bundled`、`Provider` 或 `ExplicitConfig`（`models-manager/src/catalog.rs:12`），内置条目不能证明自定义网关真的提供那个模型，所以评审者既非提供方公布、也非显式配置时回退到父模型（提交 5c0e4216）；默认评审者 `codex-auto-review` 不在目录里时，接受回退之前先刷新一次目录——每个父会话只刷一次、取消的等待者之间共享、恢复失败保留回退，评审者从内存目录解析，磁盘缓存写失败不丢已恢复的评审者（提交 84bef6ea）。**评审请求跟父请求走同一条路**：共享的路由 cookie 会在父连接建立之后变化，评审若被路由到别处，父响应在服务端的状态就对不上；现在 ChatGPT WebSocket 握手成功时捕获路由 cookie（`__oailb`、`__cflb`）并与父响应 ID 配对，整个评审与重试期间沿用这份快照，只用于匹配该父响应的 Guardian 请求，父响应的路由亲和（affinity，让一组相关请求落到同一台后端）变了就重连缓存的评审者套接字；cookie 保留到期时间、只在原安全来源与端点路径复用，不进提示词、历史与日志（提交 e742db9f）。
 
 ### 凭据与出口流量
 
@@ -261,6 +263,8 @@ rollout 是 Codex 给会话记录起的内部名字：每一次对话的完整�
 
 压缩归档的搜索改为并发：收集压缩 rollout 路径后分成最多四批并行扫描（`COMPRESSED_SEARCH_WORKERS = 4`，`rollout/src/search.rs:256`），每批内复用编译好的搜索模式，匹配片段、路径键和逐文件错误处理照旧，一个损坏文件不拖累其他文件（提交 801bd4d7）。兄弟 rollout 预取（打开一个会话时顺带预取同一父线程下的兄弟会话）修了一处边界：候选上限 64 个，兄弟超过 64 时首个祖先可能被挤出候选集、预取落空，现在最后一个槽位给首个祖先保留直到找到它（提交 48b6a9d8）。
 
+恢复时两件"沿用旧值"的事定了规矩。一是 token 计量：会话里有一个标志说明"上报的 token 用量已含保留的推理"，恢复或分叉会丢掉它，推理 token 被重复计入就会过早触发自动压缩；现在 `last_usage_includes_reasoning` 随 `TokenUsageInfo` 持久化、估算上下文用量时使用，采样与压缩完成时一起记录（提交 c62e9df3）。二是提供方：已有的对话保留自己的提供方配置，用户切换了提供方之后，恢复与输入在配置的提供方与对话不一致时被拒绝（历史照常可读），只改模型或推理设置时保留提供方；接受输入前检查当前的提供方选择（含 profile 与启动覆盖），配置加载不了就拒绝输入（提交 7ce5fa7b）。
+
 ## 并发与多任务
 
 **多会话与 git worktree。** Codex 支持同时开多个会话并行干活，每个会话可以工作在独立的 git worktree（工作树，git 的功能：同一个仓库同时检出多个工作目录，就像同一个项目开了多张互不干扰的桌子，改完的东西最后还是汇总到同一个仓库）里。`worktree` crate 的 `WorktreeManager` 负责创建：新工作树从仓库的默认分支起步，只绑定给这个新会话，不会把你改到一半的本地修改卷进去。善后也考虑到了：会话结束后，临时创建但没人认领的工作树会在销毁时自动删除；万一自动清理失败（比如有文件被占用），会明确提示用户手动执行 `git worktree remove <路径>`，而不是悄悄留下一堆垃圾目录。
@@ -276,6 +280,8 @@ rollout 是 Codex 给会话记录起的内部名字：每一次对话的完整�
 **临时分叉问一次模型。** 两个入口，同一思路——临时问一句，不付缓存和历史的代价。一个是预测分叉（experimentalPredictionMode）：从一个已加载的父会话造**临时**分叉，此时拒绝覆盖配置、指定路径、回退旧回合这些选项，完整继承父会话生效中的配置、工具、环境、协作设置、被禁插件和持久历史，响应里回报分叉实际生效的模型、服务档位和思考力度。另一个是 thread/sample（实验性，2026-10-20，提交 8f8e7a6e）：app server 新增请求，在一个继承已加载线程全部上下文与配置的临时分叉上收集一次模型回复，返回源回合 ID、响应 ID、助手文本和 token 用量，源会话不做任何修改。纪律：要求源线程是空闲的持久根线程，并携带 `expectedTurnId` 与其最新完成回合核对；采样期间源历史变了就作废结果；分叉不出现在线程列表里，完成或超时后回收；响应在工具执行和 Stop 钩子之前拦截（工具调用与无文本响应返回 null）；思考力度的调整只在提供方和模型支持保缓存更新时才应用。后续补了两项（提交 a4c91942、01448946）：`thread/sample/cancel` 按 `requestId` 取消同一连接上的采样，返回空响应、采样以 `sample canceled` 结束、临时分叉随即回收，重复取消与未知 ID 都是无害的空操作；`thread/sample` 的 `disableMcp` 与 `thread/fork` 的 `experimentalDisablePredictionMcp`（后者要求同时开 `experimentalPredictionMode`）在继承历史含增量工具且走 Responses Lite 时按请求禁用 MCP 服务器——通过线程级策略排除已配置的服务器与运行时贡献、MCP 刷新后依然生效，继承的历史前缀原样保留、工具移除以指令追加，父线程的工具不受影响。
 
 **根回合的挂起规则**：`suspend_turn_and_shutdown` 允许直接挂起有活着的后代任务的根回合、发起所有共享本地 agent 运行时的会话关闭并拦住新启动，后代清理单独收尾，被中断的后代不会被自动恢复（提交 341de32c）——此前调用方得先停掉并卸载所有后代才能挪动根回合。
+
+子会话的创建权也可以留给宿主（提交 37f199da）：`CodexThread::create_child` 从一次活着的工具调用创建一个空闲子线程，线程 ID 与控制器由宿主预留；`prepare_child` 与 `ThreadManager::create_prepared_child` 先捕获继承的设置与全新或分叉的历史，再在另一个 manager 上启动——父会话已经关掉也行；可选的 `HostToolInvocationLookup` 跟踪活着的调用、拒绝回合内重复的活动调用 ID，派发结束即撤销调用访问，启动失败清理临时子线程。归档与解档的对称性也补上了（提交 6ba3a846）：归档一个线程会连同它派生的后代一起归档，此前解档只恢复父线程；现在 `thread/unarchive` 恢复归档的派生后代（含独立归档的），跳过活跃的后代、单个恢复失败不中断其余，每个恢复成功的线程各发一条 `thread/unarchived`，线程列表的变更许可贯穿归档与解档的响应与通知以保持顺序。被驱逐的 subagent 重载后此前会失去 rollout 追踪、后续回合不在轨迹里，Code Mode 的替换会话还可能复用早先会话的单元格 ID；现在重载的子线程重新挂回根 rollout 追踪、发 `ThreadResumed` 而不重复 `ThreadStarted`，回放时重开既有线程、保留身份与历史、清掉过期的运行时单元格与终端进程映射（提交 68b67f0f）。
 
 ## 终端界面
 
@@ -303,6 +309,8 @@ Agent Plugins（agent 插件，Codex 的插件市场形态，一个插件清单�
 
 UI 插件的脚本运行时按同一思路收紧了边界（提交 2d1984b9）：`codex-code-mode-host` 新增 `--codex-ui-plugin-process`，用一个带类型的协议初始化、调用与关闭 UI 插件的 isolate（V8 引擎里一个相互隔离的执行实例）；一个 helper 进程最多承载 32 个 isolate，模块状态可以持久，同步或 Promise 形式的导出都能返回字符串结果。硬性约束是沙箱开启且 JIT 禁用、限制可执行内容的加载与全局对象；执行有截止期限，每个实例的调用队列、源码、结果与 Promise 数量各有上限；脚本失败、取消或过载就关闭受影响的 isolate，诊断信息也限定大小。helper 的握手协议升到 v3、单帧上限提到 1 MiB。宿主进程的防线（帧上限、就绪握手）挡在进程边界，V8 的防线（额度、截止、禁 JIT）挡在脚本边界——插件再失控也只影响自己的那一格。
 
+加载的并发与缓存各有一笔。插件的文件系统与技能加载中相互独立的部分现在重叠执行，并发上限八个，结果按配置名顺序处理以保留重复 MCP 服务器的优先级与启动钩子警告的顺序（提交 7f60546e）。仓库技能的发现此前即使没有任何 `.agents/skills` 目录也会反复发远程元数据请求；现在已验证的空结果可复用，并用文件系统监视盯着变化——Linux 执行器新增 `fs_watch_missing` 能力、`fs/watchMissing` 请求与 `fs/missingChanged` 通知，监视在后台注册、执行器确认覆盖后才复用空结果，复用键由文件系统、工作目录与项目根标记组成（提交 28cade4f）。
+
 **功能开关有完整的生命周期。** `features` crate 维护一张集中式注册表：每个新功能都在这里登记，标注生命周期阶段（`Stage`）：开发中（用户不可见）、实验性（在 `/experimental` 菜单里可以手动开）、稳定（开关保留但默认开）、废弃、移除。用户在配置文件的 `[features]` 节里开关某个功能，老格式的开关名由 `legacy.rs` 负责迁移。开关不是只进不出的：功能稳定后，开关本身会被逐步移除，把行为固化下来——worktree 与语音两个功能开关已整体废弃（提交 bb64b894），代码删除开关检查、配置覆盖值被忽略并给出警告。功能开关把"代码发布"和"用户用上"拆成两件事：改对话基本节奏的功能、依赖外部条件的功能，先藏在开关后面灰度放量；出了问题按开关回退，不用重新发版。而阶段标记强制回答了每个开关的归宿问题，避免开关越积越多变成没人敢动的遗物。daemon（后台常驻进程，TUI 可以附着到它而不是内嵌运行核心）模式下的功能覆盖对比去掉了固定的允许名单：任何布尔功能覆盖都可用于 daemon，启动时把显式覆盖与 daemon 报告的设置逐项对比，已移除的功能忽略、未报告的视为关闭，只把不一致的项放进重启设置；不一致时即便允许回退内嵌模式也会弹出提示，让用户选择不带 daemon 运行、确认重启受管 daemon 或取消，自动启动不再未经确认持久化已启用的覆盖（提交 8196bcdc）。
 
 **配置系统**：配置文件是 `$CODEX_HOME/config.toml`（TOML 是一种"键 = 值"分节书写的文本配置格式，比 JSON 更适合人手写）。支持 profile（配置档案，多套配置按名切换，比如"公司项目"和"个人项目"各一套模型和审批设置）、权限档位（permission profile，把沙箱强度和审批策略打包成预设）。配置类型变了，就跑一个命令重新生成 JSON Schema（描述配置文件合法结构的规范），编辑器靠它做补全和校验。用户配置之上还有一层受管约束 `requirements.toml`（由管理方下发、用户配置不能越过的需求文件，比如可以让它忽略用户与项目层的 hook 配置、只允许受管 hook）；Windows 上它的位置可以通过注册表 `HKLM\SOFTWARE\Policies\OpenAI\Codex` 的 `RequirementsPath` 值（64 位视图）覆盖，要求绝对路径、相对值报错，读不到就用 ProgramData 下的默认位置（提交 18795fc1）。
@@ -325,11 +333,15 @@ macOS 的发布包要经过代码签名（code signing，用开发者的数字�
 
 轨迹还原还有一类坑：同一次调用不只有一个输出。工具调用可能先后发出多份输出，压缩又会在保留同一调用与条目 ID 的前提下裁剪输出内容——按"同一 ID 必须内容一致"做的校验，会把后来者当冲突拒收，轨迹里反而缺了真实的演变过程。现在还原器保留不同的输出版本、只对调用本身保留一致性检查（提交 e977cb39）；迟到的工具与代码单元格事件按会话历史顺序挂接输出，而不是按映射键的偶然顺序，待定的代码单元格在整个事件还原完之后再落位；快照对账也不再把同一条会话条目在历史挪位后复用两次。轨迹要对得上"当时的实际经过"，就得容忍同一件事有多个版本的记录。
 
+遥测的配置也进了受管约束。`requirements.toml`（见"扩展机制"里的配置系统）可以管理 OpenTelemetry 的日志开关、工具结果字节上限、环境，以及日志、追踪、指标三种导出器（协议类型见提交 424916ee；语义见 727283ce）：受管值优先于用户配置、导出器整体替换、冲突时给出警告，未受管的 `span_attributes` 与 `tracestate` 保留，这两项后来也能由 requirements 按属性或成员字段合并指定（提交 154e8736）；`configRequirements/read` 暴露受管的 otel 设置，`config/read` 里应用它们但不标普通字段来源，与受管字段重叠的配置写入被拒绝。导出器的请求头可能含凭据，app-server 的配置响应在生效配置、来源层、受管约束与写覆盖元数据里一律把头的值替换为 `[redacted]`、保留头名，运行时导出器仍拿原值（提交 bea47c06）。追踪的开关也能在运行中切：app-server 以关闭追踪启动时，订阅器此前缺少导出 span 所需的桥接层，换账号启用追踪后导不出去；现在可重载的追踪层总是安装，账号切换即可启用导出，关闭时全局 tracer provider 换成空操作实现（提交 0736b264）。
+
 ## 特色模块
 
 ### code mode：把工具调用折叠成代码
 
 一条实验性路线：让模型不再逐个"点菜式"调用工具，而是写一小段程序把多个工具调用编排起来执行，配套独立的宿主运行时和预热机制，尚在功能开关的实验阶段。它反映工具层在为"任务更复杂、调用更密集"的场景探路：调用密集时，点菜式的"每次调用一轮模型"既慢又贵，程序化编排把控制流交还给代码。几处配套设计：长时间运行的 `exec`/`wait` 调用收到抢占信号后提前让出（见"Agent 循环"）；程序里的动态工具调用可并行，`DynamicToolHandler` 允许一个程序用 `Promise.all` 同时发起多个调用、互相等待客户端答复时不再彼此阻塞（提交 beae473b）；宿主支持 opt-in 的 gRPC over stdio 传输。多 agent 一侧，后台 code-mode 单元的权限归属绑定发起回合（见"沙箱与审批"）。
+
+程序的输出也有界了。一个单元格（cell，一段被执行的程序）跑出来的东西此前在 V8 与单元格执行者之间无界堆积：运行时事件进一个无界通道、输出进一个无界向量。现在 `code-mode-runtime` 的输出收集器按 `output_truncation` 模式选传输与收集方式（`code-mode-protocol/src/session.rs:36-50`）：server 模式用有序、有界、带背压的通道，文本保留一段前缀加滚动尾部、上限 1 MiB，图片 URL 与音频 URL 各有独立的 8 MiB 与 62 MiB 额度，另有 32,768 条的条目上限（`code-mode-protocol/src/host/mod.rs:19-27`、`code-mode-runtime/src/output/output_collection.rs:19`）；渲染走共享的 token budget 格式化器，媒体细节保留，收集器的丢失即使在零 token budget 下也会报告，零散的丢失汇总成有界的通知；投递失败时收集到的输出与省略记录保留（提交 6d97d6ec、92e802fb）。client 模式保留未截断的输出，由调用方自己截。宿主进程的替换收紧到一个入口（提交 5fdb50af）：gRPC 自动重连此前可能在给既有会话派发 RPC 的途中拉起一个替换宿主，宿主丢失就被悄悄掩盖；现在每个本地宿主通道绑定一个子进程，只有 `OpenSession` 能替换死掉的宿主，本地传输失败映射为 `Unavailable`、走既有的有界准入重试——宿主没了必须可见，恢复才能报告丢失的状态，而不是重放执行或已完成的外部调用。宿主的健康还能采样（提交 d373d649）：`GetProcessMetrics` 经 `ThreadManager` 读进程 ID、启动时间、累计 CPU 时间与常驻内存，不创建线程或会话；采样区分"不支持收集""本地没有宿主""采样失败"三种情况，进程自有的提供方在采样时绝不启动或替换宿主，gRPC 采样限一秒、不重试、不重置连接，可选的收集器跑在分离的工作线程上、同时最多一次收集，卡住的收集不会堵住 HTTP/2 驱动。
 
 ### 语音与云端
 
@@ -383,5 +395,6 @@ macOS 的发布包要经过代码签名（code signing，用开发者的数字�
 - 2026-10-24 基于 commit 970111f6 补充：Guardian 评审材料组装收拢到 context composition 与 transcript preparation 两阶段；V2 异步分类一律走 conversation 后端（snapshot 仅测试、旧配置值忽略并告警、缺失即失败）、评审超时可配置；Guardian V3 起步（guardianv3 特性默认关、ext/guardian-v3 crate 提供存储命名空间与 LocalBoard 辅助）；消息板补 upsert_channel、append 静默追加（不订阅不通知，用于记录证据）与分页订阅查询；trace 归因加回合/工具/技能三维、上下文贯穿工具派发、rollout 记录被接受历史并对齐图片内容；环境钩子（环境附件自带钩子配置、钩子在其就绪环境上执行）；NFS 上新 SQLite 库直接 DELETE 日志初始化（免迁移）；本地受管命令接入 SigV4（占位凭据发放、配置凭据掩码、要求 credential_masking）。
 - 2026-10-26 基于 commit 970111f6 补充：Agent 循环节新增端到端流程图（turn/step、插话抢占、等待唤醒），Guardian 节新增把关流程图（内容取自正文已有机制，不引入新事实）。
 - 2026-10-27 基于 commit 3e9264fb 补充：插件进程宿主 codex-plugin-host（清空环境启动 helper、就绪握手、256 KiB 帧上限与写背压、进程组清理、保留退出码与最后 16 KiB stderr）；技能目录增量更新（skill_catalog_deltas 默认关，只追加新增与更新、三目录共享累计元数据上限、压缩后重建重置）；同步 Guardian 证据限额推迟到准备阶段（先收集原始保留指令与助手上下文再套限额，保留省略通知、来源顺序与宿主边界）；不可信附加上下文渲染为命名工具输出（untrusted_as_tool_output 默认关，按名字加截断值去重）；rollout 轨迹保留完整 MCP 结果（过滤与截断之前记录、被拒调用记为失败）；模型目录新增 GPT-6.1 Terra（126a0ee9）；Windows MSVC V8 源码归档构建（0818b918）。
-- 2026-10-28 基于 commit cb66dbec 补充：subagent 多 agent 调用（spawn_agent/send_message/followup_task）纳入 Guardian 评审（GuardianNativeMultiAgentHistory、评审历史原样保留）；同步心跳压缩推迟到准备阶段（prepare_sync_context 在完整收集上压缩重复心跳指令、未经准备的定时消息拒绝组装）；评审代码归拢 reviewer crate（含多 agent 分类收拢）；UI 插件有界 V8 运行时（--codex-ui-plugin-process、单 helper 至多 32 isolate、禁 JIT、执行期限与各实例上限、握手 v3 与 1 MiB 帧上限）；动态工具目录步间替换（replace_dynamic_tools、宿主 opt-in、先持久化再发布）；会话索引跨进程文件锁（session_index.jsonl.lock、锁保留到 worker 结束、30 秒超时）；rollout 轨迹保留工具输出版本与历史顺序；请求准备时把确认缺失的图片引用替换为占位（历史保留原引用）；TUI 安全拦截按主题解释与更安全的继续方式（TurnModerationMetadata）。另记小项：模型目录自定义审批模板字段与标题（c587d6e5、133c11db）、实验性 ChatGPT workspace 切换（d257beb1）、内存整合服务档位独立配置（02bc25c8）、npm 包装器改 execve 原生二进制（27ace641）、fence blob 大小策略升 v0.12.2（4aca387e）、workspace 路由暴露 refresh-token 拒绝错误（fa4c0607）、网关 OAuth 默认走 Authorization bearer（9526f8d0）、区分策略受限容量失败与服务器过载（6a6e2fb1）、失败 subagent 不得把任务标记为需关注（b01148de）、MXC 卷展开探测限符号链接（77f0cbfd）。
 - 2026-10-27 文体修订：按"段落以问题为单位"的标准改写正文——变更清单式、时间线串联的段落改为问题立意（提交号降为注脚），过长段落按主题拆分；不引入新事实，机制描述与引用保持原状。
+- 2026-10-28 基于 commit cb66dbec 补充：subagent 多 agent 调用（spawn_agent/send_message/followup_task）纳入 Guardian 评审（GuardianNativeMultiAgentHistory、评审历史原样保留）；同步心跳压缩推迟到准备阶段（prepare_sync_context 在完整收集上压缩重复心跳指令、未经准备的定时消息拒绝组装）；评审代码归拢 reviewer crate（含多 agent 分类收拢）；UI 插件有界 V8 运行时（--codex-ui-plugin-process、单 helper 至多 32 isolate、禁 JIT、执行期限与各实例上限、握手 v3 与 1 MiB 帧上限）；动态工具目录步间替换（replace_dynamic_tools、宿主 opt-in、先持久化再发布）；会话索引跨进程文件锁（session_index.jsonl.lock、锁保留到 worker 结束、30 秒超时）；rollout 轨迹保留工具输出版本与历史顺序；请求准备时把确认缺失的图片引用替换为占位（历史保留原引用）；TUI 安全拦截按主题解释与更安全的继续方式（TurnModerationMetadata）。另记小项：模型目录自定义审批模板字段与标题（c587d6e5、133c11db）、实验性 ChatGPT workspace 切换（d257beb1）、内存整合服务档位独立配置（02bc25c8）、npm 包装器改 execve 原生二进制（27ace641）、fence blob 大小策略升 v0.12.2（4aca387e）、workspace 路由暴露 refresh-token 拒绝错误（fa4c0607）、网关 OAuth 默认走 Authorization bearer（9526f8d0）、区分策略受限容量失败与服务器过载（6a6e2fb1）、失败 subagent 不得把任务标记为需关注（b01148de）、MXC 卷展开检测限符号链接（77f0cbfd）。
+- 2026-10-29 基于 commit f5f1d598 补充：Guardian 新形态与边界（ReviewInput.assess_isolated 隔离评估、GuardianAssessment 评估事件进响应流且不授权执行、write_stdin 评审带 original_command 且不计入 8,000 字节、评审者按模型目录来源 Bundled/Provider/ExplicitConfig 选择并在默认评审者缺失时刷新目录一次、评审请求保留父响应路由亲和）；Code Mode 有界输出（文本 1 MiB 前缀加滚动尾部、图片 8 MiB、音频 62 MiB、32,768 条目，server 模式有界背压通道）、宿主替换限 OpenSession、GetProcessMetrics 宿主指标采样；独立可执行 codex-exec-server 随 CLI 与 app-server 包发布（npm 包不含）；受管 OpenTelemetry（requirements.toml 管导出器与日志开关、span_attributes/tracestate 合并、配置响应脱敏导出器头、账号切换后追踪导出可用）；宿主预留的 V2 子线程创建 API、解档恢复派生后代、sub-agent 重载保留 rollout 追踪；恢复与分叉保留推理 token 计量标志、恢复与输入前校验线程提供方；插件最多八个并发加载、空的仓库技能发现结果带文件系统监视缓存；元信息块"笔记基准"自 3e9264fb 补齐到当前基准，修订记录按日期恢复升序。另记小项：app-server review/start 只支持 inline 评审、detached 移除（26ad281f）、运行时认证共享给模型提供方与目录（9cce5751）、codex doctor --network-only（939f5dec）、图片可用性检查并发限八（55503b23）、MXC 默认读排除无关网络共享（c8bd6c1d）、code mode 声明 image_gen 返回类型（d3599458）、实时旁路观察者可分离而不结束会话（ef186f81）、TUI 离线可退出且 serverShuttingDown 时重试恢复（78a3185e）、TUI 插件提及改读已安装插件（f5f1d598）。
