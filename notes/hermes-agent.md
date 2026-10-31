@@ -4,7 +4,7 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | Python（桌面端与终端界面为 TypeScript） |
-| 笔记基准 | commit `088f657ecf`（2026-10-30） |
+| 笔记基准 | commit `6bb377a51d`（2026-10-31） |
 
 Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 6900 个 Python 文件，测试约 3.9 万条。
 
@@ -16,7 +16,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 
-这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一次复盘、一次到点任务"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `088f657ecf`（2026-10-30）。
+这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一次复盘、一次到点任务"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `6bb377a51d`（2026-10-31）。
 
 ## 它要解决什么问题
 
@@ -62,6 +62,8 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 配置层的读写收进了一个统一的接入口，动机来自 Hermes 的多路复用形态：一个进程服务多个档案，配置层换远端存储时，要改的是一个后端，而不是散落在十几个模块里的直接文件读取。接入口由 `hermes_cli/config_backend.py` 定义的 `ConfigBackend` 协议承担（提交 871900df63）：用户配置的每次读写都走 `get_config_backend()` 返回的后端（`config_backend.py:329`），由 `HERMES_CONFIG_BACKEND` 环境变量选择，默认 `file` 即 `FileBackend`（`config_backend.py:176`，本地 config.yaml 的读写）；其他取值对应 `plugins/config_backends/<kind>/` 包，由它的 `get_backend()` 给出实例，未知值直接失败、不静默回退。直接读配置文件的路径也迁移到了接入口的路径级辅助函数上；配置编辑、备份这类依赖"配置是一个真文件"的工具先问后端支不支持文件工具，不支持就跳过写回（提交 9909c4f7f9）。配套两个 CI 检查脚本，拒绝在接入口之外直接读配置。
 
 第二个后端是 `remote`（提交 69d037b349，`plugins/config_backends/remote/`，用户文档 `website/docs/user-guide/remote-config.md`）：每个档案的用户层配置由"配置平面"（config plane，一套集中管理配置的服务）按全局、租户、群组、所有者、agent、档案自身的顺序分层解析后下发，上层可以锁定某个键，agent 改不动锁定的键。它面向成批部署的场景（比如 Hermes Cloud），单机单用户仍用 config.yaml。几条行为与文件后端不同。启动即取、取不到就退出：每个 Hermes 进程（网关、面板、CLI、终端子进程）加载 `.env` 时拉取档案配置，约 30 秒重试后仍连不上或被拒绝就带错误退出，绝不回退到本地文件或默认值——`ConfigBackendUnavailable` 故意继承 `SystemExit`（`config_backend.py:145-148`），因为许多配置读取方会 `except Exception` 后退回默认值，而"用默认值顶替所选后端的配置"正是这里不允许出现的静默失败；启动之后的平面故障只结束一次请求、一次触发或一个回合，不结束进程（提交 f4c54cd3cc）。没有本地文件也没有本地缓存：config.yaml 不读不写，运行中的进程把最近一次取到的配置留在内存，平面暂时不可达就沿用内存里的、下次轮询再试；轮询间隔 300 秒、下限 30 秒（`plugins/config_backends/remote/backend.py:38-45`），是代码常量而不是环境变量（提交 f292c4c357）。写只送差异：`hermes config set`、`/model`、面板等每个写入方只发改动的键，带比较并交换（CAS，写之前核对版本，别人先改了就重读再把自己的改动叠上去）与一次冲突重试，绝不撤销别人的改动；删除键只删档案一级，上层仍设置时上层值继续生效并给出警告。锁定键拒绝写入并报出锁在哪一级，整份文档保存时锁定键被剔除并列出。密钥不进平面：`api_key` 这类形状的键只接受 `${VAR}` 引用，值放 `.env` 或密钥源。迁移在内存里跑、不写回。平面凭据只来自 `auth.json` 的 Nous 令牌或身份提供方（IdP）的 client credentials 令牌，绝不来自 `secrets:` 源，且只发往配置的 https 源、不跟随重定向，明文 http 只允许回环地址（`plugins/config_backends/remote/destination.py:7`、`:71`，提交 55805716e7）；配置 URL 里的 user info 不回显（提交 748b71cef7）。受管的 `/etc/hermes/config.yaml` 在 remote 模式下被忽略、启动时警告；`hermes config edit`、档案克隆与改名、`hermes backup`/`import`、`hermes gateway --config` 这些要碰文件的命令被拒绝。
+
+**导入配置模块不再有副作用**（2026-10-31 合并的一组修复）。`import hermes_cli.config` 或 `hermes_cli.auth` 这类导入动作，此前会顺带读配置文件——于是在一个持有配置锁的调用栈里首次导入这些模块，就会在锁内触发文件读取，锁序问题（两把锁被不同的调用方按相反的顺序拿，谁也不肯先放，互相等到死）由此而生。现在的纪律是**导入零读取**：提供方环境变量的可选条目改为首次被读时才补算（`hermes_cli/config_defaults_env.py:9`，补算不持锁，并发首读各算各的、结果一致）；提供方注册表改为"首次读取前同步"（`hermes_cli/auth.py:260`，模块导入只装钩子，不碰配置）；插件模块用 PEP 562 的模块级 `__getattr__` 把重依赖推迟到真正访问属性时。连锁的几条间接读取也一并断掉：远端后端把凭据解析挪到抓取锁之外、持锁期间不打日志（`plugins/config_backends/remote/backend.py:58-66`）——日志格式化本身可能反过来要读配置；日志脱敏的格式化器只读预先记录在内存里的策略表（`agent/redact.py:138-160`），不在格式化路径上开配置文件；内置提供方目录的构建不读配置、不跑插件发现（`providers/__init__.py:829`，安全 worker 进程直接返回空目录）。"锁内绝不做可能反过来要锁的事"这条规矩，靠把每一条间接读取都断掉才成立。
 
 ### 文件缓存的新鲜度判据
 
@@ -232,6 +234,8 @@ MCP 服务器也可以给自己的工具标价（`tools/mcp_tool_costs.py:1-9`�
 
 **辅助模型路由。** 很多后台小任务不需要主力模型：起会话标题、压缩上下文、识别图片、生成向量、跑 curator 复盘。这些走 `agent/auxiliary_client.py` 的辅助通道，自动降级链：主力服务商 → OpenRouter → Nous Portal → 自定义端点 → Anthropic 官方 → 放弃。每种后台任务可以在配置里单独指定模型；402（余额不足）错误自动落到链条下一环。
 
+**自己搭的模型服务器宕机时，错误是可判定的**（2026-10-31 合并）。本地托管运行时（managed local runtime，Hermes 帮你在本机或桌面端起着的模型服务器）没在服务时，此前掉进通用的连接错误堆里，界面只能说"请求失败"；现在有类型化的 `local_runtime_unavailable` 错误码，带 `retryable` 标记（`hermes_cli/runtime_provider_custom.py:585`）——"配置存在但服务器没起"与"网络不通"从此说两种话。桌面端按 60/120/300 秒的退避间隔重检，服务器一恢复就撤下通知；界面的引导文案直接给出启动办法（桌面应用或 `hermes model`），而不是让用户对着一句报错猜。
+
 **数据用途要求跟着结果走。** 连接器工具的返回结果会带数据用途标记（`tools/connectors/data_use.py:1-5`）：网关在 execute 结果上标 `dataUse.requires`（`no_training` 不得用于训练、`zero_retention` 零留存），Hermes 把它作为工具消息的 `data_use` 元数据存进已有的 display_metadata 列（正文不动，批量取并集，`/branch`、恢复、压缩的拷贝都带着），发给任何模型服务商之前剥掉。只有 Nous 提供方读它：把发出消息的并集算出来，在 chat-completions 和 Anthropic Messages 两条路径上都发 `provider.data_collection=deny`（zero_retention 另加 `zdr`），其他提供方完全看不到这个标记（`plugins/model-providers/nous/__init__.py:34-37`）。服务商用 403 `data_policy_denied` 拒绝时归为独立的不可重试原因、不做降级，提示语告诉用户换端点；对赠送档用户还有一句专门的说明——需要不训练模型的结果会被每个赠送模型拒绝，换模型帮不上忙，得升级、`/compress` 或开新会话（提交 9443a4d82e；Hermes 不知道用户的档位，这句话是条件式的）。要求本身挂在派发结果上而不是进程级全局表（提交 086984caf5）：每次派发绑一个上下文变量收集器，批量调用的条目并进同一个收集器；没有绑收集器的调用方（execute_code RPC、MCP serve）什么都不记录，此前为防无限增长设的 512 条上限整个不需要了。
 
 **提示词缓存的深水区：AWS Bedrock。** Bedrock（亚马逊的模型托管服务）用 ARN（Amazon Resource Name，云资源的唯一身份证号，形如 `arn:aws:bedrock:...:inference-profile/xxx`）标识模型；哪些模型支持提示词缓存靠一张白名单判断，白名单里存的是模型家族名（Claude、Nova）。用户配置的"应用推理配置 ARN"里看不出模型名，直接拿去对白名单必然对不上。修法（`agent/bedrock_adapter.py`）是**先归一化再匹配**：把 ARN 解析出其中包含的真实模型 ID，再查白名单。配套的反向规矩：不在白名单的未知模型一律不发缓存标记（发了会被 Bedrock 整单拒绝）；Bedrock 运行时明确拒绝某个位置的缓存标记时，记住裁定、去掉标记重试一次，不反复撞墙。通用结论：两个值长得再像，格式不统一就匹配不上；先统一格式，再比较。
@@ -313,7 +317,9 @@ flowchart TD
 - **原子写入。** 先写临时文件，再一次性替换目标文件；写一半断电也只会留下完整的旧文件或完整的新文件，不会留下半成品。
 - **心跳文件。** 定时器线程每轮刷新 `ticker_heartbeat`，`hermes cron status` 靠它区分"网关进程活着"和"网关里干活的线程活着"，线程悄悄死掉而进程还在的情形不再误报健康。
 
-错过的到点次怎么补也有了自己的旋钮：追赶窗口（一次错过的 cron 到点后，多晚之内仍补跑而不是跳过）此前对每个任务都取"任务周期的一半"、再钳到 120 秒到 2 小时；现在任务可以用 `grace_minutes` 覆盖，0 到 1440 分钟，0 表示绝不补跑（提交 b81e71addd）。0 是有效值不是"没设"，两条写入路径共用同一个归一化辅助函数，免得 Python 把 0 当 False 吃掉。
+错过的到点次怎么补有了一串明确的优先级。追赶窗口（一次错过的 cron 到点后，多晚之内仍补跑而不是跳过）此前对每个任务都取"任务周期的一半"、再钳到 120 秒到 2 小时；任务随后可以用 `grace_minutes` 覆盖，0 到 1440 分钟，0 表示绝不补跑（提交 b81e71addd）——0 是有效值不是"没设"，两条写入路径共用同一个归一化辅助函数，免得 Python 把 0 当 False 吃掉。判定单个到点次补不补时，按优先级取第一个生效的答案（2026-10-31 合并）：任务显式声明了 `catch_up` 就听它的——`true` 压过 `grace_minutes`，声明过的任务照补，哪怕已经晚过窗口；没声明的 one-shot 任务（只跑一次的任务）有 120 秒的固定宽限；其余任务按 `grace_minutes`，没配再落到全局 `cron.catch_up_missed`。一层层问下去，第一个有答案的地方定案。
+
+跑歪了的到点次也能中途叫停（2026-10-31 合并）。Stop 请求不直接杀进程，而是在档案的 `cron/cancels/` 目录写一个以执行 ID 命名的标记文件（`cron/cancellation.py:35-44`，临时文件加原子链接创建，重复请求幂等——写两次也只有一个标记）；执行中的任务在自己能检查的点上看到标记就收手，结果记为 `cancelled`。`cancelled` 是终态：执行记录（ledger，每次执行一条的持久记录）的各读取方——回执恢复、外部 worker 等待者、失去属主的清扫——都把它当"已结束"对待，不重放、不重新登记（`cron/executions.py:43`）。
 
 另外 cron 按 profile 隔离：profile `coder` 里的任务存在它自己的目录下、用它自己的密钥和技能执行，共享一份任务表就会把各家的配置和凭据串了味。到点的任务把产出经投递队列送回 Telegram、Discord 等平台，失败有专门的事故记录和重试通道。
 
@@ -429,3 +435,4 @@ sequenceDiagram
 - 2026-10-29 基于 commit 0c74cc682d 补充：远端配置后端落地（HERMES_CONFIG_BACKEND=remote 由 plugins/config_backends/remote 提供：启动拉取失败即退出、无本地文件与缓存、300 秒轮询、键级差异写带 CAS 与一次冲突重试、锁定键拒写、密钥只收 ${VAR} 引用、凭据只发 https 源不跟重定向、后端故障只结束一次请求或回合；ConfigBackend 段按现状改写）；聊天换会话后旧会话脱离而非只读（session_detached.py 的 detach 与 SessionStore.route_named 统一各路由变更，提醒/心跳/排队结果跟随，上下文耗尽给出继续办法）；手动 /compress 走配置的上下文引擎（冷会话传 model_thresholds 与窗口、结果变大即拒、一次性引擎释放）；元信息块"笔记基准"自 c714c42431 补齐到当前基准，修订记录按日期恢复升序。另记小项：部署会话令牌授权门控的 dashboard、令牌可从文件读、file: 前缀（2edfd0d369、de4a083d6c、20f2654429）；kanban 丢失 worker 恢复群（重拨 budget、干净退出算崩溃不算协议违规，db48f91211、e62c15e667 等）；cron 手动运行是额外触发不是定时那次（f656543e03 等）；群聊 standalone 后端转发网关服务的每个 room 方法及交接修复群（95762e286d 等）；hosted-rooms 讨论 budget 可配（afe3a9111f、41010b6fef）；hot-serve 取消的预留不再在清理后接管档案（839415bd11 等）；审批请求 id 显式传递（cfed2ca71f）；Discord exec-approval 视图分文件（e0e3349ed3）；config-remote 后续修复（IdP client secret 轮换换新令牌 e3d0046203、cache_version c0c74d20e4、显式 set 等于继承值也存 714eab92e9、frozen worker 不发布档案 dotenv 部署 b8fc674b55、核心泛化解析后端种类 3f903abeed、无配置文件时 hermes config edit 退出 1 fd44f481ef）。
 - 2026-10-30 基于 commit 088f657ecf 补充：refresh-prompts 让继续中的会话显式采用更新后的提示词源（刷新代数存 state.db、下一回合对比重建、一次请求只断一次缓存、tools[] pin 保留、无请求时逐字节复用）；cron 追赶窗口可按任务用 grace_minutes 覆盖（0 表示绝不补跑，0 是有效值的写入纪律）。本区间另一大主题是子进程的看护与收尸（约二百条 fix/refactor/perf，未入正文——笔记暂无对应章节，待定是否新开）：process_identity 新增第四层"每进程一个 owner-death 监督者"（sh 实现、TERM 3 秒转 KILL、重放、空组释放），spawn_owned 成为拥有子进程的唯一入口（会话/进程组长 + 监督者 + spawn 记录（ledger）），own/release 接管外部派生的进程组，spawn 记录（ledger）跨进程串行读改写、锁至多等 2 秒、LSP 侧挪出事件循环，被信号杀死的监督者重启但年轻者只重启一次防重启循环，空闲监督者留 30 秒宽限；浏览器 harness 守护进程的命令内所有权检查、桌面 bot 的空闲屏自停与人类租约四窗规则、本地运行时崩溃重启先清旧路由器的存活模型子进程，同属这一主题。另记小项：Webapp 可在宿主侧安装桌面插件（abfe2876f3）；桌面侧栏按 profile 分组显示空 profile（47f0fc99d2）；WhatsApp 投递与已读状态记入 gateway.log（31d5f1d44d）；Desktop/Webapp/dashboard 安装源限制合入又回退（43ee1b0872，维护者裁定桌面端须能装私有插件，HEAD 不含）；插件目录新增约二十个社区插件条目。
 - 2026-10-30 结构重构：按端到端讲解的标准改写正文——新增缓存命中成本图、学习循环四层流程图、会话搜索写入与读取双流程图、多路复用隔离图、cron 到点执行流程图、插件凭据代发时序图；正文两处商业腔用词随改（保底、守住），缓存成本表述从价格比喻改为直说，仓库地图节的配置接入口与缓存判据两段改为小节；术语与引用保持原状，不引入新事实。
+- 2026-10-31 基于 commit 6bb377a51d 补充：导入配置模块零副作用（OPTIONAL_ENV_VARS 首读补算不持锁、PROVIDER_REGISTRY 首读前同步、PEP 562 延迟；远端后端凭据解析出抓取锁且锁内不打日志、日志脱敏只读内存策略表、bundled_profiles 不读配置不跑插件发现、安全 worker 返回空目录）；cron 到点次补跑的优先级链（任务 catch_up 声明压过 grace_minutes、one-shot 固定 120 秒宽限、全局 cron.catch_up_missed 垫底）与运行中到点次的取消协议（按执行 ID 写标记文件、原子且幂等、cancelled 为终态、执行记录各读取方不重放不重复登记）；本地模型服务器宕机类型化（local_runtime_unavailable 带 retryable、桌面端 60/120/300 秒退避重检恢复即撤通知）。另记小项：clarify_batch 能力协商一张表单、Enter 全部答完才发；浏览器通知三层（标题闪烁、favicon 徽标、系统通知）；无人查看会话的空闲检查先解析目标再开读、不嵌套读上下文（session_viewer_close.py:239-250）；键位按窗口类型解析。

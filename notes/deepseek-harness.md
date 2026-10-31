@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `f3803c9697`（2026-10-29） |
+| 笔记基准 | commit `ce7073d512`（2026-10-31） |
 
 DeepSeek Harness（简称 dsh）是 DeepSeek 官方开源的 agent harness：一套让 AI 智能体（agent）真正"跑起来"的完整支撑系统，管的是模型怎么被调用、工具怎么被执行、对话怎么被记录、危险动作怎么被拦截。它用 TypeScript 写成，是一个 monorepo（一个仓库里装很多独立发布的小包），`packages/` 目录下有近 300 个功能包、几十万行代码，底层构建在自带的插件框架 Cordis 之上。它目前处于 developer preview 阶段（跟进到 0.2.2-alpha 版本线），官方明说会有破坏性变更。它最大的标签是 **everything-is-a-plugin（一切皆插件）**：框架里没有写死的核心，连模型适配、工具注册、对话记录、智能体循环本身都是插件，理论上每一个都能被配置换掉。
 
-这份笔记按问题组织，不按 dsh 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次调用、一次启动、一次恢复"从头走到尾。项目演进过程放在文末修订记录里。笔记起于官方 0.1.6-alpha.2（commit `ddefc45fbc`，2026-09-21），跟进到 commit `f3803c9697`（2026-10-29，标签 dsh-v0.2.2-alpha.2）。
+这份笔记按问题组织，不按 dsh 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次调用、一次启动、一次恢复"从头走到尾。项目演进过程放在文末修订记录里。笔记起于官方 0.1.6-alpha.2（commit `ddefc45fbc`，2026-09-21），跟进到 commit `ce7073d512`（2026-10-31，含 0.2.1-rc.5 同步）。
 
 ## 它要解决什么问题
 
@@ -157,7 +157,7 @@ flowchart TD
     CANCEL["cancel 带原因（用户 / 父级 / 钩子 / 销毁）<br/>记进 turn/end 事件"] -.-> STOP
 ```
 
-分两级的理由是**拦截点可以精确到步**。"工具执行前先过审批"插在 `tools/pre-execute` 就行，不用碰循环本身；"模型请求出错后决定要不要重试"有专门的 `agent/request-error`。粒度切细了，扩展点才能又多又稳。模型请求经 `llm-pi-ai` 包走 pi 项目的统一模型 API（pi-ai）发出，适配层支持 pi-ai 的会话级提示词更新与工具更新——会话中途的提示词与工具变更按 pi-ai 的语义传下去；借标准适配层的实际好处在这：上游协议演进，下游跟着升级就行。
+分两级的理由是**拦截点可以精确到步**。"工具执行前先过审批"插在 `tools/pre-execute` 就行，不用碰循环本身；"模型请求出错后决定要不要重试"有专门的 `agent/request-error`。粒度切细了，扩展点才能又多又稳。模型请求经 `llm-pi-ai` 包走 pi 项目的统一模型 API（pi-ai）发出，适配层支持 pi-ai 的会话级提示词更新与工具更新——会话中途的提示词与工具变更按 pi-ai 的语义传下去；请求头也有挂载点（2026-10-31 合并，提交 a05a0d02fa、d54475a681）：waterfall 事件 `llm-pi-ai/request-headers`（`packages/llm/llm-pi-ai/src/index.ts:99`）让插件在每次推理请求发出前准备头部，监听器只能改请求自有的头、改完必须调 `next()` 传下去；harness 的归属头（attribution，告诉模型服务"这是哪个应用发起的"）在所有监听器之后强制覆盖——插件的头可以加，身份不能冒；监听器抛出的 TypeError 细节与非 Error 值替换为安全指引后才对用户可见，错误细节不当作泄密通道。借标准适配层的实际好处在这：上游协议演进，下游跟着升级就行。
 
 ### Agent 句柄与收件箱
 
@@ -198,6 +198,8 @@ flowchart TD
 dsh 还支持 PTC 模式（programmatic tool calling，程序化工具调用）：让一段代码在运行环境里直接编排多个工具调用，而不是每个工具都绕模型一圈。安全上有个收紧：PTC 模式下只有"带父调用的子派发"允许执行真正的工具名，模型直接发起的调用会被拒绝——编排权收进沙箱里，模型只能递任务单，不能直接下手。PTC 程序的执行方式有三档（`packages/ptc-runtime/ptc-runtime-node/README.zh.md:12`、`:49`）：默认的 `per-call` 在全新 Node 进程里跑一个异步函数体；`vm-script` 把程序当 Script 求值、支持顶层 await，配 `scriptPersistence: true` 时按所有者保留 context——顶层声明、函数与对象身份（包括经顶层 `await` 初始化的值）留给后续调用，函数局部变量仍只在函数内有效（提交 7745b3b9da、1f45e38279）；显式启用的 `persistent-in-memory` 为每个 agent 保留一个受限的 REPL（read-eval-print loop，交互式解释器，输入一行代码立刻执行看结果）。临时进程与保留进程后来统一成一套进程管理（提交 c3473d1ea6）。无论哪一档，文件系统、网络与子进程操作仍是 Node 操作、受所选 OS 沙箱约束，PTC 工具调用保留注册表的可见性、排序、日志与审批规则，运行程序不改变 Session 的常设策略，被拒绝后也不自动重放程序（`README.zh.md:68`）。
 
 联网能力走 DeepSeek 自家的 Search 与 Fetch API（两组 web 工具，0.2.1-rc 线），整套放在设置开关后面、默认关闭，由用户显式打开（提交 fda98dadd2）。实现里有个省 token 的细节：搜索分出的辅助 Messages 请求（给搜索接口做准备的内部请求）**显式关闭了 thinking**——这些辅助回合的生成正文会被 provider 丢弃，推理 token 根本没有读者；DeepSeek 模型默认开思考，不关的话每次搜索都白付一份延迟和输出 token（配套提交针对 #6099）。"谁会读这段输出"决定"要不要生成它"，这个判断对一切辅助请求都适用。
+
+多文件修改有了专用的 `apply_patch` 工具（2026-10-31 合并，PR 6747）：模型不再逐个调 read/write，而是提交一份 Codex 风格的补丁文本（参数名 `input` 也与 Codex 对齐），一次描述对多个文件的增删改。执行分三个阶段：先解析补丁；再做整包预检——语法、改动块与目标文件的匹配、缺失文件一起查，任何一项不过就整包拒绝、一个字节都不写入（`packages/fs/tool-fs/src/apply-patch.ts:17` 的系统提示词把这条契约直接讲给模型："once applying starts, operations run in order, stop at the first failure, and are not rolled back"）；预检通过后按序提交，中途失败即停、不回滚——所以提示词同时要求模型在重试前重读受影响的文件。工具默认不装：这是部署级开关（`packages/fs/tool-fs/src/index.ts:53` 的 `applyPatch: z.boolean().default(false)`），base 与 Web standard 预设都没有打开它；文件观察策略（fs-observation-policy，改前必读、写入带版本核对）照常对它生效。要不要把"补丁式批量修改"提供给模型，由部署方按自己的审批与回滚能力决定——工具提供的是能力，不是默认行为。
 
 模型与界面的交互还有一条结构化通道：`propose_action` 工具（`packages/experimental/action-cards`，2026-10 下旬，提交 9980af2d48）。一个实验包想在回答下方提供"要不要顺手创建一个个性化页面"这类可选动作，不需要自己加工具：模型先加载该实验的技能，再调 `propose_action` 提出提案；卡片在回合结束后出现在回答下方（浏览器半边在 `packages/experimental/client-ui-action-cards`），用户不点它就什么都不跑，用户的每次选择会被记录、在下一次请求时报告给模型。卡片类型（card kind）是可注册的——登记动作名、技能、详情 schema、动词与处理器，个性化页面与插件推荐都已改成这种类型（提交 9b04d772b9、fcb7340be1），两者现已合并为实验插件「个性化推荐」（提交 d6d51be4cb）。成本上有一条硬约束：会话里没有任何卡片技能加载之前，这个工具不出现——不占提示词，也不给模型空转的机会。
 
@@ -280,7 +282,7 @@ flowchart LR
 
 **迁移是显式可见的。** 会话的存储格式状态可以查询：查一个还没加载的会话，能得知它是否 `migration-required`（需要先迁移才能用）。读取投影时，遇到这种旧格式会话不当场迁移，而是返回"需要迁移"的标记，附一份缓存的历史投影提示，让调用方自己决定下一步；分叉请求有 `allowMigration` 预检开关（默认 true）——设为 false 时，源会话尚未迁移就明确报 `session/migration-required`（"先打开源会话完成迁移再分叉"），而不是悄悄迁完再分。界面在展开会话前显示头部的迁移状态，客户端对需要迁移的分叉和 subagent 发现给出引导。老格式会话"看得见、可拒绝、受引导"，迁移不藏在读取路径里顺手发生。
 
-会话的读取面也做了整理。History、State 与 Web 三个控制器拆成共享 Session 作用域的普通类（提交 2f2caf88b3）："先订阅再读"去掉了尾部修复，`events` 与 `page` 暴露带游标的历史读取，`observeEvent` 只做纯事件订阅，`follow` 除非请求激活否则保持被动；运行时投影的读取绑定到一个会话、投影句柄上暴露会话绑定的读取器（提交 fcca540841）；会话状态读取会采样网关的待处理远程事件，网关契约为此提供 `getPendingRemoteEvents()`（提交 a1473ddec6）。工具结果的持久形式也定了：会话持久化规范化后的工具结果值（提交 102b42d14a），轨迹视图可以把原始结果与渲染结果上下堆叠显示、并记住你选的原始结果显示模式（提交 6287b3f387、22c2493322）。存储格式的版本规则放宽到"兼容的整单元版本"（提交 a3c3f107ef），失败的写入被限制在自身范围内，锁拒绝与每条记录的版本隔离有测试覆盖。
+会话的读取面也做了整理。History、State 与 Web 三个控制器拆成共享 Session 作用域的普通类（提交 2f2caf88b3）："先订阅再读"去掉了尾部修复，`events` 与 `page` 暴露带游标的历史读取，`observeEvent` 只做纯事件订阅，`follow` 除非请求激活否则保持被动；运行时投影的读取绑定到一个会话、投影句柄上暴露会话绑定的读取器（提交 fcca540841）；会话状态读取会采样网关的待处理远程事件，网关契约为此提供 `getPendingRemoteEvents()`（提交 a1473ddec6）。工具结果的持久形式也定了：会话持久化规范化后的工具结果值（提交 102b42d14a），轨迹视图可以把原始结果与渲染结果上下堆叠显示、并记住你选的原始结果显示模式（提交 6287b3f387、22c2493322）。轨迹的呈现细节最近又补了三条（2026-10-31 合并）：代码高亮只按录制时存下的语言标注走，不再靠猜测二次推断——排查"当时高亮骗了我"这类问题先从源头堵住；失败的工具输出先按文本渲染、渲染不了再退到错误码，排查时先看到人能读的部分；嵌套调用（subcall）默认折叠，展开才看明细。存储格式的版本规则放宽到"兼容的整单元版本"（提交 a3c3f107ef），失败的写入被限制在自身范围内，锁拒绝与每条记录的版本隔离有测试覆盖。
 
 同一份日志上还长出了第二个只读视图：实验性的「统计」页签（`packages/experimental/client-ui-stats`，提交 160ba96793 起，经 Developer tools 发布，提交 310e943fe7）。每轮一行，展开列出各步的上下文与输出 token 数、缓存命中率、首 token 延迟、模型与工具用时、输出速度和总用时条，「触发」列说明这一轮由什么触发（团队消息写明发送方），带图提问显示张数并可预览；它只读会话事件与提问里的持久图片，不注册工具、提示词段落或服务，六个 Conversation Definition 把事件窗口折叠成名为 `stats` 的视图节点（`client-ui-stats/README.zh.md`）。需要完整事件清单、请求头与工具正文时用「轨迹」页签，两者读同一份会话。
 
@@ -354,6 +356,8 @@ stateDiagram-v2
 
 **让一个 Session 在自己的 worktree 里干活、把结果变成 PR：Forge（实验性）。** forge 组合包（`packages/experimental/forge-bundle`、`client-ui-forge`、`forge-session`，提交 fc43a2d507）在右侧栏加一个面板，列出某个 Session 创建或推送过的 pull request，Session 头部有按钮与分支标签；新建 Session 的选项行里可以让它在自己的 Git worktree（同一仓库的另一个检出目录）里启动——多个 Session 并行改同一个仓库时互不踩脚。worktree 的名字由 Session 推出（`dsh-` 前缀加 Session id 中 UUID 的前八位十六进制再加四位随机，比如 `dsh-6b1f02c4-9a3e`，提交 accd5b77c4）；worktree 还没建好时发出的消息先扣在收件箱里，面板建完再放行，失败或停止后消息保留（提交 eea6d3b7ec）。面板与变更请求（change request，GitHub 上就是 PR）之间的绑定靠证据：`gh pr view`、`gh pr edit`、`gh pr checkout` 这些命令的第一个参数 URL 与输出里打印的该 PR 的 URL 算绑定证据（来源记为 `referenced`），描述里的链接不算（提交 e99272d04e）；展开的卡片能把草稿标为可评审、按仓库允许的合并方式合并，提供方动作 `markReady` 与 `merge` 返回类型化的 `ForgeActionFailure`，注册表在动作结束后立即重新轮询该变更请求（提交 80254034c7）；会话列表显示 worktree 与变更请求状态（提交 4916ce9bff）。
 
+**定时自动化任务升级为 Host 级独立实体（2026-10-31 合并，PR 6189）。** 此前的定时任务挂在会话里，会话没了任务也就没了；现在任务（standalone task）直接属于 Host，与会话同生共死的关系被拆开。触发时间用 RRULE 表达（iCalendar 标准的重复规则，"每周一早上九点"这类写成一条字符串），投递目标有三种（`packages/schedule/schedule/src/types.ts:352-393`）：`session` 每次都投给同一个已有会话；`new_once` 首次投递时建一个会话、之后都投给它；`new` 每次投递都开全新会话。会话内管理任务的工具是四个：`schedule_create`、`schedule_list`、`schedule_view`、`schedule_edit`（`packages/schedule/tool-schedule/src/index.ts:372-431`）——建、列、看、改各一个，改与删合并进 `schedule_edit`；浏览器界面新增「Automation tasks」页，读写的是同一份 Host 级目录，会话里建的任务在页面上也管得到。下一步的计划已有提案（事件触发自动化，PR 7545，仍是 RFC 评审状态、未落地）：任务除定时外还能由事件触发，提案里设计了提供方/触发器/智能体三层过滤、只读的判定轮与 notify 卡片、任务自有的判定 Session，并明确不做"结束工具"——判定轮只表达结论，不直接操纵世界。
+
 ## 启动流程与启动加速
 
 启动分两层看。**流程层**：`app-boot` 包从 Harness 主目录读 profile 配置（`cordis.yml`），先加载 `.env` 环境变量，再按前文说的层叠顺序（bundle 依次、profile 补丁、主目录补丁、命令行补丁）组装插件树，启动失败时报清晰错误而不是甩一屏堆栈。**性能层**：0.1.6 版本线花了大量力气做启动提速，思路统一是**延迟加载**——不是所有东西都在启动时备好，而是用到的才加载。具体例子：类型系统（typert）生成的结构改成"第一次用到才构建"；可选的原生依赖（用 C/C++ 编写、导入很慢的组件）推迟到确认需要才导入；网页端的客户端组装也推迟了。判断标准不是"能延就延"，而是：启动路径上马上要用的必须提前备好，冷门和可选的才延。而且"延迟"本身有统一实现（一个相对调用方的延迟加载工具），不是各处自己造。
@@ -394,3 +398,4 @@ stateDiagram-v2
 - 2026-10-26 基于 commit 22ddee3792 补充：Agent 循环节新增回合流水线图（含收件箱与各拦截点），能力挂载点节新增三段式拆分图（内容取自正文已有机制，不引入新事实）。
 - 2026-10-29 基于 commit f3803c9697 补充（upstream 合并 637 提交、干净无冲突，官方版本线至 0.2.2-alpha.2；基准后出现并回退的 5 组提交不涉既有正文）：Forge 实验组合包（PR 面板与 worktree Session、按 Session 命名 worktree、worktree 就绪前扣住已发消息、gh pr view/edit/checkout 作绑定证据、面板内标记就绪与合并、会话列表显示状态）；Computer Use 实验组合包（仅 macOS 宿主、默认关闭、系统权限与按应用同意两层授权、同意按 profile 隔离并跨重启保留、按可执行路径与 bundle identifier 共享）；组合包平台声明 dsh.bundle.platforms（启动跳过不支持层并报告、plugin-manager 保存前检查、默认列表隐藏）；PTC 三档执行方式（per-call / vm-script 带 scriptPersistence / persistent-in-memory，临时与保留进程统一）；liveshare 所有者宿主、查看者宿主与分享运行时；会话控制器拆为 History/State/Web、运行时投影读取统一、网关暴露待处理远程事件、规范化工具结果值持久化、轨迹原始与渲染结果堆叠、存储兼容整单元版本；「统计」页签经 Developer tools 发布。另记小项：Windows ACL 沙箱去掉 LUA_TOKEN 以放行内置 Administrator 与 WDAGUtilityAccount（bdd75ca1a0，正文未讲 Windows 沙箱后端）；共享固定动作审批卡（2d46f34701）；/models 徽章与列表机制共享、api-key 提供方跟随官方 /models、读取 tool_update（873c68c15b、e90f65c0d7、70b945901d、a36745f6ee）；web composer 宿主接受后才显示消息、发送中保持可编辑（2eb0df5628、7cf67a2dbf）；desktop 启动崩溃诊断与 Intel Mac 打包（c6d01dcac0、a578ca435f）；forge/forge-panel、cua、ptc 各有十余条修复未逐一列出。
 - 2026-10-30 结构重构：按端到端讲解的标准改写正文——新增 waterfall 拦截协议图、配置层叠优先级图、工具执行 pipeline 图、审批判定流程图、会话日志与模型上下文对应图、压缩三事件时序图、可延续 subagent 激活状态图；两处用词随改（落成→写成、进程探针→进程存活检查）；术语与引用保持原状，不引入新事实。
+- 2026-10-31 基于 commit ce7073d512 补充（upstream 合并 351 提交、干净无冲突，含 0.2.1-rc.5 同步）：apply_patch 工具落地（Codex 风格多文件补丁、三阶段解析/整包预检拒绝即零写入/按序提交不回滚、部署级开关默认关、fs-observation-policy 照常生效）；定时自动化任务升级 Host 级独立实体（RRULE 加三种投递目标 session/new_once/new、会话内工具 schedule_create/list/view/edit、「Automation tasks」页同一目录）；llm-pi-ai 请求头 waterfall 事件（插件改请求自有头、归属头最后强制覆盖、TypeError 脱敏）；轨迹呈现三项（代码高亮只信录制标注、失败输出先文本后错误码、subcall 折叠）；事件触发自动化 RFC 进提案（三层过滤、只读判定轮加 notify 卡、任务自有 Session、无结束工具，评审状态）。另记小项：侧栏文件树按分栏显示（byPane）、流式可见性缓存（首帧延迟约 1114ms→23ms）、rescope 的 maxBuffer 上限 16MB。

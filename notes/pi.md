@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `f09d01b8`（2026-10-30） |
+| 笔记基准 | commit `918c6ffc`（2026-10-31） |
 
 Pi 是 earendil-works 开源的 AI agent 工具包，TypeScript 写的，monorepo（一个仓库里放多个软件包）组织在 `packages/` 下，现在 11 个包，GitHub 上 star 数很高（旧笔记记录为 10.8 万）。它最出名的产品是 `pi` 这个终端编码 agent——在命令行里对话、读写代码的 AI 助手，同类有 codex、opencode、Claude Code。但它的定位不止于此，README 里的词是 "agent harness"（套件/外壳），意思是给你一套搭 agent 的现成骨架：从统一大模型接口、agent 运行时、终端界面库，到持久化运行时，一层一层都能单独拿出来用。
 
-这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都从"它面对什么情况"讲起，把一次调用、一次提交、一次崩溃恢复从头走到尾，让不了解这个项目的人也能顺着读完。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `f09d01b8`（2026-10-30）。
+这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都从"它面对什么情况"讲起，把一次调用、一次提交、一次崩溃恢复从头走到尾，让不了解这个项目的人也能顺着读完。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `918c6ffc`（2026-10-31）。
 
 ## 它要解决什么问题
 
@@ -144,7 +144,7 @@ sequenceDiagram
     CODE->>SESS: 提交（写条目 + 更新任务 + 改文档，一个事务）
     SESS->>STORE: 批次写入
     STORE->>STORE: 持久化落定
-    STORE->>STORE: 调 adopt(seq)，恰好一次
+    STORE->>STORE: 调 receive(index, seq)，逐批恰好一次
     STORE-->>OBS: 遥测、观察者派发、宿主 observeCommits（晚一个微任务）
     Note over OBS: 发布赶在提交触发的等待与中止之前<br/>被拒绝的提交在会话判死之前也先发布
     SESS-->>CODE: 提交完成，状态可见
@@ -177,7 +177,9 @@ SQLite 驱动住在 chord 里（`@earendil-works/chord/sqlite`），目前只有
 
 所有后端必须过同一套**一致性测试套件**（随 `/testing` 导出）：外部实现跑一遍就知道行为对不对，不用自己重新发明检查清单，也不用逐条读文档猜语义。文档存储是版本化的——原子基础版本（base）加 delta 增量，可历史读取、可回收、可索引查询。`checkpointWhen` 谓词是文档定义的必填项（2026-10-19 起，提交 5c1736f）：每个文档必须显式声明"什么时候可以打快照"，没有隐式默认——压实策略错了的代价是性能或正确性，这种决策不该由默认值替作者做主。
 
-接口契约本身也在收紧（提交 92ab536）：`Storage.commit` 要求调用方随批次传一个 `adopt(seq)` 回调，存储必须在批次已经持久、下一次提交开始之前同步调用它恰好一次，没有持久成功的提交不调用（`packages/durable/src/types.ts:1131-1136`，IndexedDB 实现在 `storage/indexeddb.ts:420`、`:441`）。内存视图的采用因此由存储落定精确驱动：内存里看得见的状态，一定是存储已经承认的状态。
+接口契约本身也在收紧（提交 92ab536），并在 10 月末换了一次形状（提交 e5c6182b）：`Storage.commit` 的签名现在是 `commit(batches, receive, context)`（`packages/durable/src/types.ts:1341-1347`）——一次调用可以带多个批次；在全部批次都持久之后、下一次提交开始之前，存储对每个持久了的批次按序同步调用一次 `receive(index, seq)` 作为持久化回执，类型注释写明"回执不是发布，Session 之后再发布"。调用成功时返回持久批次数与拒绝原因（如有）；连接丢失这类"结果未知"的情况以拒绝收尾，此前已发出的 `receive` 调用仍然算数（IndexedDB 实现在 `storage/indexeddb.ts:420`、`:441`）。内存视图的采用由存储落定精确驱动：内存里看得见的状态，一定是存储已经承认的状态。
+
+这次换签名是为了 group commit（成组提交）：此前每个提交的回调、结算、存储往返都串行持在变更锁上，一次工具调用要做 12 次存储往返时，吞吐被往返延迟固定（4 毫秒往返约 27 runs/s）。现在一个存储调用还没返回时，新到的提交攒成一批一起发出，每个提交仍有独立的序号、按到达行序发布；发布严格按行序走，任务跑到碰到"还有未发布写者"的键才让出（`packages/durable/src/session/writer.ts:97-120`、`:71-81`）。调度器的决策区跟着改了规矩：读到未发布写者的键，就等发布完重跑；只有"干净读"（没碰任何未发布键）的决策才落库生效（`packages/durable/src/harness/scheduler.ts:280-282`）——决策不能建立在别的进程还没看见的状态上。作者报告在 128 会话、4 毫秒往返的压测里吞吐从约 5 升到约 440 runs/s（`packages/durable/docs/group-commit.md`，数字未独立复测）。
 
 ### 崩溃后怎么恢复
 
@@ -237,7 +239,7 @@ pi 在这个问题上的选择是公开承认"不做"。README 原话：Pi 不�
 
 MCP（Model Context Protocol，连接外部工具的行业标准协议）的转变说明了这条原则怎么落地。初版连 MCP 都不带，理由是这类功能"正确做法不止一种"，与其替你选一种，不如留好挂载点。到 2026-10 前后，MCP 成为内置能力：全局 `mcp.json` 注册服务器，stdio 或 streamable HTTP 连接，工具和资源直接进模型上下文。原则本身没变，成本判断变了："不做的成本"超过"做的成本"时再动手。subagent、计划模式、待办清单、后台 shell 到今天仍然不在默认清单里。
 
-工具多到不适合全量出现在模型面前时，有两条现成的路：延迟加载（工具注册标记 deferred，不主动提供，直到 modelTools 指名，支持增删）和检索（`tool_search` 扩展，BM25，模型先搜再取）。给程序用的接入形态也齐全：交互 TUI、`-p` 打印模式（可接管道）、`--mode json`（事件按 JSON 行输出）、`--mode rpc`（stdin/stdout 的 JSONL 帧，供非 Node 语言集成）、SDK（`createAgentSession` 把整个编码 agent 嵌进你自己的应用）。
+工具多到不适合全量出现在模型面前时，有两条现成的路：延迟加载（工具注册标记 deferred，不主动提供，直到 modelTools 指名，支持增删）和检索（`tool_search` 扩展，BM25，模型先搜再取）。检索的排序在 10 月末定形为多字段 BM25 排序器，规则三级（提交 cc44fa21、e033f255）：查询恰好是某个工具的全名（或 `名字__` 前缀）时，该工具直接排第一；否则先比匹配到的查询词个数——不管词命中在名字还是描述上，匹配更多词的排前面；词数相同再比 BM25 分数。分值上工具名一个词的权重约是描述里一个词的三倍（按逆文档频率加权，`packages/coding-agent/src/extensions/tool-search/tool.ts:179`），命名空间字段权重减半且不参与按长度归一（`:245-247`）。分词对非 ASCII 文本走 `Intl.Segmenter` 的词级切分，中文这类无空格语言因此能命中；纯 ASCII 仍走按空格切分的快路径（提交 79006f06，PR 11037，`tool.ts:76-92`）。durable 侧的 `tool_search` 与 codemode 的 `searchTools()` 持有同一份排序器并保持同步（`packages/durable/src/search.ts:1-3`，提交 c7372af4）。给程序用的接入形态也齐全：交互 TUI、`-p` 打印模式（可接管道）、`--mode json`（事件按 JSON 行输出）、`--mode rpc`（stdin/stdout 的 JSONL 帧，供非 Node 语言集成）、SDK（`createAgentSession` 把整个编码 agent 嵌进你自己的应用）。
 
 ## 并发与多任务
 
@@ -299,7 +301,7 @@ flowchart LR
 
 durable 给一次运行的"能跑多久、怎么续、什么时候拒"各定了一条规矩。回合上限存在会话上：`agent.maxTurns` 与模型设置一样由子会话与分叉继承（`packages/durable/docs/spec.md:556-599`），一次运行的工具轮次超过它就以 `runFailure` 结束，宿主从 `pi.live.runFailure` 得知原因——带坏工具的运行不会无限转下去。续跑有正式入口：`{ type: "continue" }` 提交（`packages/durable/src/types.ts:573`）让空闲会话不带用户消息、就着现有上下文再跑，回合额度重新计满（`spec.md:381-388`）；它从不排队，运行中再提一个 continue 直接抛 `ConversationBusy`，答案已经给出后再提则无事可答、不发模型请求就结束（示例 `packages/durable/test/examples/33-turn-limit-and-continue.ts`）。不想让一次输入意外拉起运行的宿主，可以给输入标 `whenIdle: "reject"`：会话没有运行时以 `ConversationIdle` 拒绝且不写任何记录（`spec.md:2865`、`:2880`），有运行时 `whenBusy: "steer"` 照常转向。准入也可以放进宿主自己的事务：`Conversation.submit(tx, draft)` 在调用方的提交里完成准入并返回提交 ID（提交 cc9c5231），宿主的校验、业务写入与"这次输入已受理"要么一起持久、要么一起不持久；准入必须发生在该提交第一次写表之前、每个提交至多一次，违者在所有路径上抛 `ReadAfterWrite`，别的会话或包装过的事务一律拒绝。
 
-生成阶段的钩子表也补齐了（`spec.md:3294-3300`）：`afterTool` 对每个工具任务的结果走替换链（`spec.md:3371`），`afterTools` 与 `afterRun` 是全体观察者，`beforeCompact` 以第一个作出的决定为准。模型调了清单之外的工具、或运行时解析不到实现时，这次调用以带 `tool_unavailable` 诊断的错误工具结果收场、运行继续，模型可以对错误作出反应（`spec.md:966-969`）。`afterRun` 能在运行答完之后以 `runEndTask` 申请持久任务（提交 7e15f960）：答案先提交、输入先结算，生成阶段才在 finish 阶段把这些任务作为子任务创建、在 drain 阶段等它们到终态——`pi.live.run` 因此在它们结束前保持忙碌，Stop 连它们一起中止，崩溃后照常恢复，排队的输入要等它们结束才投递。钩子与任务读历史有了不随压缩变化的基准：`HookApi.entry()`/`entries()` 与 `TaskRuntime.entries()` 读会话的原始提交历史（`spec.md:2151-2152`、`:3316-3317`），压缩从不改动条目序列，以条目 ID 为界的区间在压缩前后、重跑时读到同样的内容（`spec.md:3414`）。
+生成阶段的钩子表也补齐了（`spec.md:3294-3300`）：`afterTool` 对每个工具任务的结果走替换链（`spec.md:3371`），`afterTools` 与 `afterRun` 是全体观察者，`beforeCompact` 以第一个作出的决定为准。钩子清单里又添了一层（提交 d280e1ff，PR 11619）：`beforeProviderRequest` 在 pi-ai 把请求翻译成某个厂商的格式之后、真正发出之前触发，钩子可以整体替换这一次的请求体（`packages/durable/src/harness/types.ts:975-984`，挂载点在 `generation.ts:295`、`:669`）。它与 `beforeRequest` 分属两层——后者在消息层动对话内容，前者在请求体层动厂商自有格式，比如 Anthropic 的 `thinking.display` 这类 pi-ai 参数里没有的字段；请求体的形状随 `model.api` 变，钩子要先看 API 类型再动手。替换只对本次请求生效，同一次尝试内因网络错误重发时会拿新请求体再过一遍钩子链。模型调了清单之外的工具、或运行时解析不到实现时，这次调用以带 `tool_unavailable` 诊断的错误工具结果收场、运行继续，模型可以对错误作出反应（`spec.md:966-969`）。`afterRun` 能在运行答完之后以 `runEndTask` 申请持久任务（提交 7e15f960）：答案先提交、输入先结算，生成阶段才在 finish 阶段把这些任务作为子任务创建、在 drain 阶段等它们到终态——`pi.live.run` 因此在它们结束前保持忙碌，Stop 连它们一起中止，崩溃后照常恢复，排队的输入要等它们结束才投递。钩子与任务读历史有了不随压缩变化的基准：`HookApi.entry()`/`entries()` 与 `TaskRuntime.entries()` 读会话的原始提交历史（`spec.md:2151-2152`、`:3316-3317`），压缩从不改动条目序列，以条目 ID 为界的区间在压缩前后、重跑时读到同样的内容（`spec.md:3414`）。
 
 ## 特色模块
 
@@ -326,7 +328,7 @@ chord 解决的问题：一个功能（比如"显示 agent 正在做什么"）�
 
 监听方处理不过来也有安排：`Watch` 的监听器还在忙上一次回调、或尚未启动时，后续帧排队进 `PendingOps`（`packages/chord/src/delta/pending.ts:51`）；积压超过 `MAX_PENDING_OPS`（10,000 条操作，`pending.ts:12`）后，队列里只留一条"用当前值整体替换"（`PendingTake` 的 `replace` 分支，`pending.ts:9`）。监听器空出来时只收到一次调用——最新值加折叠后的操作（溢出过的就是整体替换），此前"积满 100 帧并成一帧"的粗做法被它取代。进程内的 `NativeWatch` 不走这套排队，另收一个可选的 `replace()`；durable 侧的事件流保持顺序，文档、视图与任务图的监视做折叠（提交 d8d99950）。配套两条让"增量"更便宜：`appendText` 给字符串追加一条廉价的追加操作，durable 的部分提交从"重新赋值整条字符串"改为追加（提交 da412b03）；chord 的追加操作持有自己的文本切片，副本不再让整条持续变长的字符串留在内存里（提交 f715a15c）。
 
-一份提交落库之后、各方看到之前，还有一条发布路径要定：谁先看到、谁后看到、观测自己坏了怎么办。这条路径现在收在 `Storage.commit` 的 `adopt` 调用里（提交 8b0caefc）：遥测事件、durable 自己的观察者（文档监视、会话视图、任务图、调度器、等待）与宿主 `subscribeCommits` 的派发（晚一个微任务）都在这一处发出，赶在提交触发的每个等待与中止之前——监听方因此不会碰上"注册晚了、错过了开头"的问题；被存储拒绝的提交在会话判死之前也先发布，抛错的遥测适配器记为 `host_error` 而不是让提交失败——观测通道自己坏了，不该连累业务提交。变更的形状对应另一问：监听方怎么知道"源没了"？chord 的 watch 监听器改收一个变更对象 `{ value, ops, retired }`（native 版只有 `{ value }`），源的废弃从"监听到此为止"变成变更里的一个标志——关心这件事的监听方照常收到最后一帧，不需要另设通知通道；durable 的文档监视跟随文档的地址，任务文档的监视在其废弃调用之后结束。watch 之下垫了一层同步观察者（`observeDoc` / `observeConversation` / `observeTaskGraph`），上面的监视都建在它们之上。
+一份提交落库之后、各方看到之前，还有一条发布路径要定：谁先看到、谁后看到、观测自己坏了怎么办。这条路径的引入点在提交被存储承认的时刻——当时挂在 `adopt` 上（提交 8b0caefc）；接口换成多批 `receive` 后（提交 e5c6182b），发布由 Session 在回执之后按行序执行，存储还可选地提供自己的作用域让发布的标记与批次一起落地（`packages/durable/src/types.ts:1349-1353`）：遥测事件、durable 自己的观察者（文档监视、会话视图、任务图、调度器、等待）与宿主 `subscribeCommits` 的派发（晚一个微任务）都在这一处发出，赶在提交触发的每个等待与中止之前——监听方因此不会碰上"注册晚了、错过了开头"的问题；被存储拒绝的提交在会话判死之前也先发布，抛错的遥测适配器记为 `host_error` 而不是让提交失败——观测通道自己坏了，不该连累业务提交。变更的形状对应另一问：监听方怎么知道"源没了"？chord 的 watch 监听器改收一个变更对象 `{ value, ops, retired }`（native 版只有 `{ value }`），源的废弃从"监听到此为止"变成变更里的一个标志——关心这件事的监听方照常收到最后一帧，不需要另设通知通道；durable 的文档监视跟随文档的地址，任务文档的监视在其废弃调用之后结束。watch 之下垫了一层同步观察者（`observeDoc` / `observeConversation` / `observeTaskGraph`），上面的监视都建在它们之上。
 
 失败本身也是一次变更——这是 watch 词汇的最后一个统一（提交 5f312dac）：监听器收到的调用带类型标签，正常变更 `{ kind: "value", value, ops, retired }`，失败 `{ kind: "failed", error }`；可恢复的失败不关监听，下一个值照常到达，只有不可恢复的失败才以对应类型的 `WatchEnd` 收尾，被中止的上下文以 `aborted` 结束。durable 一侧的观察者与报告随之共用同一套形状：观察者收 `advance(call, ctx)` 与 `end(end)`，报告带 `report.kind` 与 `report.error`，`subscribeCommits` 更名 `observeCommits`，`session_failed` 更名 `storage_failed`，压缩失败与压缩状态标明各自的触发者，文件监视以 `stop(ctx)` 结束——两套系统一套词汇，监听方不必为"值、失败、结束"各学一种回调形状。存储格式不变（pi.live 版本 2 带迁移）。
 
@@ -351,7 +353,11 @@ stateDiagram-v2
     s2 --> [*]
 ```
 
-另一项决定换了词汇：placement 改为 hostAddress（提交 5ec24188）——每个 `remote()` 类型都必须声明宿主地址（类型与声明两级报错），"在这里"由地址单独决定，没有地址的宿主拒绝服务远端类型，hold 在线路上始终携带地址。切片 7b 已排入计划：重载搬进内核，插件依赖捆绑、外部依赖按 opt-in（`packages/chord/docs/next/slices.md`）。
+另一项决定换了词汇：placement 改为 hostAddress（提交 5ec24188）——每个 `remote()` 类型都必须声明宿主地址（类型与声明两级报错），"在这里"由地址单独决定，没有地址的宿主拒绝服务远端类型，hold 在线路上始终携带地址。
+
+排期中的切片 7b（重载搬进内核）与 7c（Node 侧插件组件）已建成（提交 4b535d57、a14cdf90），"重载不重启"从内核规则到磁盘目录打通了。7b 的 `host.reload(facets, ctx, { failed })` 走固定的四段：先 staging（预演）——每个插件的新代码在"只记录不激活"的模式上各跑一遍，把要新建的对象、要改的规则记进各自的暂存表，不碰任何真实资源（`packages/chord/src/next/host/staging.ts`）；某个插件的新代码失败，保留它的旧代码、把依赖它的变更插件一并回退，重新预演直到收敛——这就是"全有或全无"的来由。预演通过后一次批量提交生效（`host.ts:611-634`），再逐个对象定去向：没在跑的重试创建、在跑但涉及操作系统资源或存储迁移的重启、其余原地换上新实例（`object.ts:717-722`），最后汇报结果。重载彼此串行；提交之后的取消不会回滚提交，错误里带 `committed` 标记说明哪些已生效（`host.ts:814-822`）。这一刀同时删掉了 member-source 与 keyed-members 两层旧间接层（约 489 行），引用直通对象实例成为唯一间接层。
+
+7c 解决的是"插件从哪来"：Node 侧新增插件组件（`packages/chord/src/next-node/plugins/`），目录里每个含 `package.json` 的子目录是一个插件——`name` 即插件名，`dependencies` 打进 bundle，`peerDependencies` 视为宿主已有、不重复打进，`"chord": { "external": [...] }` 指定保持外置、加载时由宿主解析的包（`discover.ts:103-123`）。`plugins.load` 逐个构建并求值，失败的单个插件进 `failed` 列表、不阻塞其余插件；`plugins.reload` 对内容未变的插件复用原对象（内核只做纯替换），构建失败的插件以旧代码传入并上报失败，让内核的收敛规则看得见（`plugins.ts:230-268`）。配套的文件监视只标记不执行：插件代码待重建、依赖待安装、插件集合有变、宿主基础代码待重启，四类标记各带代数，防止上一轮监视的清理误伤新一轮变更（`watcher.ts:17-22`）。再往后是切片 10（HTTP 传输）的规格草稿：传输点清单 D1-D12、RouteHandle.retry、"不自动重启 worker"等取舍已进评审（提交 f8497996、9e4868a6，`packages/chord/docs/next/slices.md`）。
 
 ### codemode：模型写代码、代码调工具
 
@@ -440,3 +446,4 @@ evals 是行为评测——用真实任务考察 agent 表现，不是玩具基�
 - 2026-10-29 基于 commit c466a359 补充：Chord v2 开工（packages/chord/src/next，重载不重启、单一属主、与 durable 对齐；切片 6b 的 StoreStorage 让 durable 存储跑在 v2 store 上并列入后端一排，切片 8 的注册表与 host.root）；durable 运行规矩（会话级 maxTurns、continue 提交、whenIdle reject、submit(tx, draft) 提交内准入）与生成钩子（afterTool 替换链、afterRun 申请 runEndTask、tool_unavailable 错误结果、entry/entries 读不随压缩变化的原始历史）；pi-env 守护进程被终止时杀掉自己的命令、线程起不来以 spawn_error 回复；pi.exec 输出上限 256 MiB；另记小项：pi-ai 模型目录改由每提供方一个 defineProvider() 定义文件加 models.dev v2 构建（2e0f175b）、OpenRouter ~anthropic 别名走 Anthropic Messages（44f6851b）、扩展 changelog（b4b72a35）、提示词模板文档评测（9628c848）、同一工具集重设时保持活跃工具顺序（b9e3eef6）、工具描述概括 union 与多行 codemode 输出类型（f6ee9ce9）、启动时工作目录被删报告而非崩溃（88ffcdc7）、stripAnsi 去私有参数 CSI（b5fc6dc8）、裸 URL 止于 CJK 标点（fa168515）、pi.live v3 迁移为缺 turns 的运行补 0（018fdcf4）、Delta tracker 不用 WeakRef（a9228305）。
 - 2026-10-30 基于 commit f09d01b8 补充：Chord v2 切片 7a 建成依赖模型（引用长于提供方、未绑定等待、停泊无计时器、readyTimeout 只计自身步骤、启动死锁消失、注册表读者即等待依赖、重试经操作 ID 与已访问清单转交阻塞者、依赖截止时间取消改 parked_long）与 hostAddress 取代 placement（remote 类型必填宿主地址、无地址宿主拒绝远端类型）；临时 -e 扩展源按需刷新（未固定 npm 源查新重装、分支引用的 git 源同样刷新、更新后版本未变给警告）；项目信任已保存的决定优先于自动信任。另记小项：图片缩放取 PNG 与 JPEG 中较小者（e7a0df27）、智谱 1308 用量限错误不重试（c719d5b0）、ESC+Return 加原生 Shift 视作 Shift+Enter（86dc686c）、技能诊断标为 [Skill warnings]（f14813e9）、Windows 路径大小写不敏感比较（1be312b4）、SDK 流可代摘要解析认证（6fed3cfb）、常规模式不再写 OSC 133 提示标记（19ce8059）、Orca 终端识别为支持 Kitty 图片（f09d01b8）、折行边界去样式词后空格并在行尾重置删除线（2ce9d527）、Chord v2 切片 7b 排期与决定文档一批。
 - 2026-10-30 结构重构：按端到端讲解的标准改写正文——每个特性从"面对什么情况"讲起，把一次调用、一次提交、一次崩溃恢复从头走到尾；新增模型接入分层流转图、压缩触发流程图、系统提示词重放图、一次提交时序图、存储后端表、扩展接入口表、TUI 三层成本图、Chord v2 停泊状态图、codemode 日志重放时序图；术语首现处补充解释；不引入新事实，机制描述与引用保持原状。
+- 2026-10-31 基于 commit 918c6ffc 补充：Chord v2 切片 7b 重载进内核（staging 预演全有或全无、失败插件保留旧代码并回退依赖者、一次批量提交、对象按情况重试/重启/原地换实例、提交后取消不回滚并带 committed 标记、引用直通对象成为唯一间接层）与切片 7c 插件组件（package.json 声明 name/dependencies/peerDependencies/chord.external、逐插件构建求值失败进 failed 不阻塞其余、文件监视四类标记只标记不执行、切片 10 规格进评审）；Storage.commit 换多批签名并落地 group commit（一次多批、receive 逐批回执、按行序发布、调度器脏读等发布重跑只认干净读、作者报告 4ms 往返约 5→440 runs/s 未独立复测）；生成钩子新增 beforeProviderRequest（厂商请求体整体替换、与 beforeRequest 消息层分层、仅本次生效）；tool search 排序定形（全名直查第一、命中词数优先、名称约三倍权重、Intl.Segmenter 词级切分、durable 与 codemode 持同步副本）。另记小项：pi update 支持自更新命令配置（PI_SELF_UPDATE_COMMAND 环境变量与全局 settings 的 selfUpdateCommand，占位符填充，退出码不作数、以自身包版本或 PATH 里的 pi 为准，8bc94b19）；chord 输出清洗先整段删 ANSI 序列再删单字符（50d9f823）；codemode 的 tools.read() 支持 structuredOutputSchema 并可返回图片块（04414839）；env watch 的变更列表超帧上限（16MiB−64KiB）改发 overflow 事件而非失败（102d1287）。

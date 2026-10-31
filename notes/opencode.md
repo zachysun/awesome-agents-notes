@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `a070e11643`（2026-10-30） |
+| 笔记基准 | commit `958f965d35`（2026-10-31） |
 
 OpenCode 是一个开源的 AI 编码 agent（agent 指能自己连续做事的 AI 助手：读代码、改文件、跑命令、反复检查，而不是一问一答）。它用 TypeScript 写成，跑在 Bun（一个比 Node.js 更快的 JavaScript 运行环境）上，代码在一个 monorepo（单仓库多包，一个仓库里管着 35 个相对独立的小包）里，仓库处于 2.1 系列。你可以把它理解成 Cursor、Claude Code 的同类，但有两点不同：第一，它不绑定任何模型厂商，OpenAI、Anthropic、DeepSeek、本地模型都能接；第二，整个项目 MIT 协议开源，核心逻辑全部可读。
 
-这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `a070e11643`（2026-10-30）。
+这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `958f965d35`（2026-10-31）。
 
 ## 它要解决什么问题
 
@@ -153,6 +153,8 @@ flowchart TD
     RESTORE --> SETTLE["上一进程遗留的'执行中'工具调用<br/>结算为失败，绝不重放说不清的副作用"]
 ```
 
+声明的另一头是后台任务：后台 shell、subagent、图片生成这类活儿同样要跨进程接续。它们的恢复标记原先记在通用的 KV 表里，现在搬进专用的 `job` 表（迁移 `20261030054400_job`，提交 664c8f0990），重启后的接续读取也走这张表。
+
 **一步可能有多次物理尝试；指令是值增量。** 每一步（Step，一次"模型与工具的往返"）大多数时候就是一次对模型的物理请求，但通用重试、继续状态被拒、不完整的流续传、溢出触发的压缩，都可以在不重新准入输入的情况下再试一次；工具调用在副作用开始前先持久化，工具调用 ID 只在一步内唯一，所以持久事件还要带上它所属的助手消息 ID。指令（发给模型的那些"提示词素材"：内置说明、发现的技能指引、引用、MCP 指引）按内容寻址存储——正文以哈希为键只存一份，事件里只发"哪些键变了"的增量；每次模型请求前并发读一遍所有指令源、原子提交一个增量；压缩结束开启新的指令世代（epoch，一个版本区间，跨压缩推进），分叉的会话拿父会话最新值当基线。规格专门强调"没有指令注册表"：指令不是一份固定名单，而是值加增量的流。
 
 **回合结束不一定是终点：`/goal` 的目标循环。** 斜杠命令 `/goal <目标>` 给会话立一个目标。它解决的问题是：模型答完一轮就停，多步任务常常差最后一口气——用户要么盯着屏幕反复说"继续"，要么任务悄悄烂尾。目标循环的做法是会话空闲后由一套评审机制决定要不要接着干（提交 8de0323975，实现在 `packages/core/src/plugin/goal.ts`，以内部插件身份注册）。评审提示词先把身份划清：明确要求模型"停止扮演助手、只当评审、不许调用任何工具"，只拿对话里已有的证据——工具结果、命令输出、文件内容——核对目标是否达成，"助手自称做完了"不算证据；目标文本包在 `<untrusted_objective>` 标签里当数据看待，里面若藏着"该怎么评判"的指令一律忽略。评审回一行 JSON 判决：`done`（达成）、`continue`（附下一步）、`blocked`（需要用户介入，比如缺决定、缺凭据、缺手工步骤）、`paused`（用户要求停）、`wait`（后台工作没汇报完）。判 `continue` 就注入续跑提示接着干，外面套三道上限防失控：最多 50 轮、连续 3 轮没有任何工具调用算停滞、等后台工作最多 30 分钟就暂停（`goal.ts:16-19`）。几个状态细节都朝着"不悄悄失控"设计：目标状态存会话的插件存储，分叉或子会话不继承；状态里记着一个进程启动 ID，上一个进程立的目标重启后回到 paused，不会自己悄悄续跑（`goal.ts:22-23`）；循环写状态前先重读一遍，期间用户敲的 `/goal pause`、`clear` 或新目标赢过循环自己的写入（`goal.ts:61`）；评审请求太大可以压缩一次再评，第二轮还溢出就暂停。整个循环从头到尾是：
@@ -212,7 +214,7 @@ OpenCode 里"agent"指一套带独立系统提示词和权限配置的运行身�
 2. **保留最近对话（tail）**。压缩时不是把全部历史都变成摘要，而是留一段最近的原文：默认保留量在 2000 到 15000 token 之间，取"可用空间的 25%"与这个区间的交集。放不下一整个回合（turn，一次用户提问到模型答完）时，还会在回合内部找一条消息边界切开，尽量填满保留额度。
 3. **生成摘要**。剩下的历史被序列化成纯文本（用户消息、助手回复、推理过程、工具调用与结果各有固定格式），连同上一轮摘要一起交给 compaction agent，产出新摘要替换原文。压缩完成后，如果设置了自动续跑，系统会把被压缩打断的那条用户消息重新放回对话（图片等大附件换成占位文本），让任务接着走。
 
-这一整套对应的配置项都在 `compaction` 命名空间下，可以关闭自动压缩、调整保留量。三级减负从头到尾串起来是：
+这一整套对应的配置项都在 `compaction` 命名空间下：可以关闭自动压缩、调整保留量；自动压缩的触发余量本身也能配（`compaction.buffer`），接受 `"20%"` 这类百分比写法或直接的 token 数——百分比按模型的窗口换算成 token，0% 或不小于窗口的设置在配置归一化时直接判无效（提交 6700dd87b5）。压缩请求自己的尺寸也有一道上限：摘要请求的提示词最多占"输入窗口与上下文窗口里较小的那个"（`packages/core/src/session/compaction.ts:1152-1158`，提交 cb1e58fe44）——目录或配置覆盖偶尔把输入上限报得比上下文窗口还大，而上下文窗口还要装下模型的回复，照抄大数请求就发不出去了。三级减负从头到尾串起来是：
 
 ```mermaid
 flowchart TD
@@ -259,7 +261,7 @@ flowchart TD
 
 ### Code Mode：模型写代码，解释器执行
 
-Code Mode 让模型写一段 JavaScript，在一段受控的运行时里连续调用工具，省得每个动作都单独请求一轮模型。跑这段代码用的不是宿主的 JavaScript 引擎直接执行，而是 `packages/codemode` 里自带的一个解释器——支持哪些语法和内置对象列在 `interpreter-support.md` 里，不在清单上的就是不支持。为什么放着现成的引擎不用、要自己写解释器？因为模型写的代码要受控：不能让它访问任意网络、任意文件，工具调用要逐个过权限。宿主引擎给不了这种细粒度的控制点，自带的解释器才有。
+Code Mode 让模型写一段 JavaScript，在一段受控的运行时里连续调用工具，省得每个动作都单独请求一轮模型。跑这段代码用的不是宿主的 JavaScript 引擎直接执行，而是 `packages/codemode` 里自带的一个解释器——支持哪些语法和内置对象列在 `interpreter-support.md` 里，不在清单上的就是不支持。为什么放着现成的引擎不用、要自己写解释器？因为模型写的代码要受控：不能让它访问任意网络、任意文件，工具调用要逐个过权限。宿主引擎给不了这种细粒度的控制点，自带的解释器才有。这话有个现成的例子：解释器里的 `fetch` 也要过权限——按 webfetch 工具的同一套规则检查 URL（`packages/core/src/codemode/fetch.ts:24-27`，注释写明"在 webfetch 被拒的 URL 在这里同样被拒"），被拒时把用户附的那句反馈原样作为错误信息带给程序；读本地文件的 `file:` 地址则直接报错（提交 bdca40ac0e）。
 
 代价是要自己实现 JavaScript 的运行语义，promise（异步结果的占位对象）这块最近修了一处：解释器现在保证**每个 job 跑到完成**——两个 await 之间的代码、以及一个异步函数到它第一个 await 之前的函数体，在另一个 job 开始之前执行完，调度器抢占长 job 时也不例外；工具调用仍然并发（`packages/codemode/src/interpreter/promises.ts`，提交 3b593dd5d2）。宿主引擎里这是理所当然的微任务语义，自己写解释器就得自己保证。另一处是成本：codemode 运行时跨执行复用，不再每次工具调用都重建（`packages/core/src/codemode/tool.ts`，提交 6ec56821d6）；配套修了一批内置方法的边角语义（`Uint8Array.from` 的映射函数、字节比较不做类型转换、`flatMap` 跳过空位、非整数进制截断，提交 db45c950a9）。
 
@@ -275,6 +277,8 @@ Code Mode 让模型写一段 JavaScript，在一段受控的运行时里连续�
 - `websearch` 只对特定模型服务商开放。
 
 内置清单里还添了一个会自己跑后台的：`experimental_image_generate`，生成或编辑图片（提交 89f3ac108f）。它解决的问题：生成图片要等几十秒，如果工具调用一直挂着，模型和用户都得干等。做法是把工具调用改成"后台任务式"——一次端到端的调用流程是：模型给出一段描述加最多 8 张参考图（本地路径或 http(s) URL，单张上限 20MB），调用立即返回一个任务 ID，图片在后台生成、写好后自动通知会话并附保存路径——工具说明里明确要求模型等待期间不要轮询、不要睡眠、不要反复检查文件。可用性跟着模型目录走：有可用的图像模型才注册，目录一变就重新评估（`packages/core/src/tool/plugin/image-generate.ts:232-234`），所以它不需要单独的开关；配置里的 `experimental.image_generate` 只承担偏好（比如默认模型），不配就选"会话所属提供方里最新的图像模型，否则所有可用里最新的"（`image-generate.ts:387`）。说明文字同时约束模型的行为分寸：只在用户要求做图或改图时调用，觉得配图有帮助但用户没提，先问再做，别自作主张生成（提交 372d0d5510）。
+
+清单外还有一组实验工具：artifacts（提交 8f0fc21e71，PR 60351）。一个 artifact（工件）是一组带标题的 UTF-8 文件——比如一个 `index.html` 配 `assets/app.js` 的小网页——外加一个入口文件（默认按 `index.html`、`index.md`、唯一文件取）。模型经四个工具操作它：创建、读取、更新、删除，ID 形如 `art_...`（`packages/core/src/tool/plugin/artifact.ts`）。文件落到哪由"提供方"决定：每个提供方实现同一个接口（`packages/core/src/artifact.ts:54-63`）——`create`、`read`、`update`、`delete` 四个操作各自是一个 Effect，外加 ID、名字、能力声明和给模型看的提示词；注册表按 ID 存放提供方、默认用哪个可选（`artifact.ts:157-158`），内置一个 `local`（`artifact.ts:32`），插件侧也有对应的 artifact 接口，别的后端可以照着接。工具输入里还能为单次请求临时指定提供方，不动默认值。
 
 ### 执行的统一封装与自定义工具
 
@@ -395,7 +399,7 @@ ACP（Agent Client Protocol，智能体客户端协议）解决的是另一个�
 
 顺带把三个"协议"放在一起分辨：**ACP** 管编辑器怎么接 agent，**LSP** 管编辑器（或 agent）怎么接语言理解能力，**MCP**（Model Context Protocol，模型上下文协议）管 AI 助手怎么接外部工具和数据源。三者各管一段，OpenCode 三个都用。
 
-MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：通常是 opencode 作为 MCP 客户端，主动去连外部工具服务器；client MCP 反过来——客户端应用（编辑器、TUI）自己跑 MCP 服务器，opencode 通过客户端应用打开的入站 WebSocket 连它。为什么要反转？有的宿主环境不允许子进程对外拨号连接，但宿主自己可以开一个本地服务端等别人来连——传输方向跟着宿主的能力走。注释里把边界写得很清楚：只有连接方向反转，传输从不主动外拨，只服务于进来的连接（`packages/core/src/mcp/socket-client.ts:12-18`）。客户端侧的 `connectClientMcp` 助手收一组工具定义，工具以 `<应用名>_<工具名>` 的形式暴露给模型，每次调用还带发起它的会话 ID；浏览器发不了认证头，就改用 URL 里的 ticket（`packages/client/src/mcp.ts:8`、`:10`、`:31-33`）。TUI 的实验性 `open_terminal` 走的就是这条路（提交 0030a705a3、4535146139、4a6dacec5e、0b93f0b749）：宿主把终端能力以 MCP 工具的形式交给 agent，opencode 自己不必开进程。作为客户端连接外部服务器时也多了一分耐性：单个工具的 schema 畸形（MCP SDK 自己都会拒绝的那种）时，记一条警告、跳过这个工具，服务器上其余正常的工具照常加载（`packages/core/src/mcp/client.ts:67`、`:210`，提交 2dc8db4a9d）——一个坏工具不再拖垮整台服务器。
+MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：通常是 opencode 作为 MCP 客户端，主动去连外部工具服务器；client MCP 反过来——客户端应用（编辑器、TUI）自己跑 MCP 服务器，opencode 通过客户端应用打开的入站 WebSocket 连它。为什么要反转？有的宿主环境不允许子进程对外拨号连接，但宿主自己可以开一个本地服务端等别人来连——传输方向跟着宿主的能力走。注释里把边界写得很清楚：只有连接方向反转，传输从不主动外拨，只服务于进来的连接（`packages/core/src/mcp/socket-client.ts:12-18`）。客户端侧的 `connectClientMcp` 助手收一组工具定义，工具以 `<应用名>_<工具名>` 的形式暴露给模型，每次调用还带发起它的会话 ID；浏览器发不了认证头，就改用 URL 里的 ticket（`packages/client/src/mcp.ts:8`、`:10`、`:31-33`）。TUI 的实验性 `open_terminal` 走的就是这条路（提交 0030a705a3、4535146139、4a6dacec5e、0b93f0b749）：宿主把终端能力以 MCP 工具的形式交给 agent，opencode 自己不必开进程。作为客户端连接外部服务器时也多了一分耐性：单个工具的 schema 畸形（MCP SDK 自己都会拒绝的那种）时，记一条警告、跳过这个工具，服务器上其余正常的工具照常加载（`packages/core/src/mcp/client.ts:67`、`:210`，提交 2dc8db4a9d）——一个坏工具不再拖垮整台服务器。stdio 方式的服务器还换了一层地基：消息分帧不再依赖 MCP SDK 的读缓冲，自己按消息边界切，单条消息上限 16 MiB（`packages/core/src/mcp/stdio.ts:15`，提交 1a443ae42a）。
 
 ## 配置系统
 
@@ -421,6 +425,8 @@ MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：�
 
 **接模型**用 Vercel AI SDK（一个统一的模型调用库），依赖里有 19 个 `@ai-sdk/*` 适配器（Anthropic、OpenAI、Google、Bedrock、Azure、Groq、Mistral、xAI 等），加上 `openai-compatible` 接住所有兼容 OpenAI 接口的服务（DeepSeek、Ollama 本地模型等都走这条道）。围绕"目录说的"和"端点认的"之间的出入，有几层适配：提供方变体（同一家服务商的不同接入形态）在包归一化之后再构建（提交 e9ac459c2e）；模型的推理档位可以从配置读取，不只认模型目录的元数据（提交 d889cb2044）；两个小的兼容开关针对 OpenAI 兼容端点的差异——`streamUsage` 可以关掉请求里的 `stream_options`（有些端点不认这个字段，提交 49f52ff2d5），`store` 字段只对 OpenAI 与 Azure 的 chat completions 发送（提交 57f4a364e3）。
 
+绝大多数模型走 HTTP API，Claude Agent 提供方是个特例（提交 f29e281322，PR 58782）：它不直接调 Anthropic 的接口，而是经 Anthropic 的 Claude Agent SDK 启动用户本机安装的 `claude` 程序（Claude Code 的命令行），用用户自己的 Claude Code 登录（订阅、API key 或云账号都行）出 Claude 模型。规格文档（`specs/v2/claude-agent-provider.md`）把边界划得很清：opencode 只用公开 SDK，不坐在 claude 与 Anthropic 之间、不改它的请求，也不读 Claude Code 的已存登录；在 PATH 上找不到 `claude` 时可用 `OPENCODE_CLAUDE_PATH` 指路。这套接法有三处值得记：聊天沿用 Claude Code 自己的系统提示词，上面只加一段"你现在跑在 opencode 里"的短注，再叠上 agent 角色与 opencode 的指令源（AGENTS.md、技能、MCP 指引）；opencode 的工具以 MCP 桥接的方式交给 claude，名字统一加 `mcp__opencode__` 前缀（`packages/core/src/plugin/provider/claude-agent/tools/names.ts:6`），过长的名字换哈希缩短（`names.ts:8-13`），claude 若调了一个没桥接过去的名目，那是它内置的能力、与 opencode 无关（`names.ts:16` 的注释）；每个会话一个长驻的 claude 进程，空闲 5 分钟停掉（`claude/sessions.ts:25` 的 `IDLE_MS`）。启动前先查一次版本：太老的 claude 直接报错、提示 `claude update`——老版本会无视逐字提示的约定，把用户文本误当斜杠命令解读（`claude/probe.ts:21-31`）。
+
 `baseURL` 覆盖解决的是自建网关的问题：提供方配置里的地址覆盖目录里每个模型自带的端点，不只覆盖你配置过的那些模型；按模型配置的设置在之后应用，仍然优先（`packages/core/src/config/plugin/provider.ts:90-96`）——自建网关的人配一次提供方地址，不会有哪个模型因为目录自带端点而绕过网关。
 
 目录内容本身也有筛选开关。`OPENCODE_DISABLE_FREE_MODELS=1` 把 OpenCode 与 OpenCode Go 两个提供方里不收费的模型（`cost` 里没有任何一项输入价格大于 0）从目录里删掉，没有密钥时也不再自动列出它们（`packages/core/src/model.ts:95`，提交 aadd4d8614）；realtime（实时语音）、embedding（向量嵌入）、reranking（重排序）三类非对话模型不在模型清单里（提交 df6fb9a460）。目录更新持续跟进新模型（如 ChatGPT 登录的模型目录加入 GPT-6.1 Terra，提交 4e982c0814）。
@@ -428,6 +434,8 @@ MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：�
 ChatGPT 订阅的上下文上限单独说，因为它是"电网部件从核心挪到插头"的一个样本：模型后端其实接受每个模型的完整输入窗口，但更大的请求多吃 ChatGPT 套餐的额度，这段逻辑从 OpenAI 提供方的内置代码改成了独立插件（`packages/core/src/plugin/provider/openai-context-caps.ts:1-2`，提交 2a381f895a），按套餐把窗口压到 OpenAI 的默认值（272k，`gpt-6.1-sol` 为 500k，更晚的模型沿用 500k）——不用 ChatGPT 订阅的人不加载这份逻辑。
 
 AI SDK 一层还长出了两个观察口。请求带 `includeRaw: true` 时，模型流按原序、在解析出的事件之前附带 `{ type: "raw", data }` 原始帧事件——`data` 是这一帧解析后的 JSON，这个包还没支持的新帧类型也能看见；默认关闭，非流式的 `generate` 忽略它（提交 93701210bd）。`@opencode/ai/experimental` 下新加了实验的 Extraction API（提交 b21b21babb）：从文本里按字段类型读出值——比如问总数，回答是一个数字或"输入没说"，而不是一段概率腔的对话；类型不匹配的输入不发送，目前只有 Cloudflare 的 Clairic 模型服务它。
+
+**思考块跨请求重放，不再降级成正文**（提交 822594b9ae，PR 60498）。推理部件（模型"思考"的文字）随历史回发给模型时，不少服务商要求带签名——服务商对思考内容算的校验值，内容改一个字签名就对不上，用来防历史被篡改。此前的处理是：没有签名或被打断的思考块一律降级成普通文本发回，结果模型在后续请求里看到"自己想过的话"变成了对话正文，行为容易跑偏。现在分档处理：要求签名而确实没有的思考块整体丢弃，不再伪装成文本；不要求签名的模型（`qwen`、`minimax-` 开头）按原样发；Gemini 对签名丢失的重放用 Google 文档记载的固定标记 `skip_thought_signature_validator` 顶替（仅当该步还没有别的已签名工具调用）；Mistral 系则把最后一条没带工具调用的助手消息标成 `prefix`——这是 Mistral 的续写约定，告诉模型"这条是你自己说的，接着往下写"。
 
 **错误有类型，界面才能说清"什么时候能再用"。** 以前的配额错误是一句面目模糊的"出错了"，用户不知道是额度用完了还是网络抖了、要等多久。结构化会话错误（`packages/schema/src/session-error.ts`）加了可选字段 `retryAfterMs`——服务商要求等多久再试，从记录失败的时刻起算。配额错误里，响应体含 `FreeUsageLimitError` 的被翻译成专门的 `provider.free-limit` 错误种类，带固定提示语（赠送额度用完，接自己的服务商、订阅 OpenCode Go，或换模型）和重置时间；其他配额错误仍是泛泛的 `provider.quota`（`packages/core/src/session/to-session-error.ts`，提交 a9fa57b738）；`retryAfterMs` 对带这个字段的任何提供方错误都传递，不限于配额错误（提交 80b8762913）。TUI 据此显示赠送额度提示与重置时间、给出换模型的提示、不再弹失败 toast（提交 86a0950c61）。厂商返回的"额度用尽"类错误也单独归了类：判定正则把 budget exceeded、usage limit、limit exhausted 这类说法识别为一种可分类的失败（`packages/ai/src/provider-error.ts:180`），不再是面目模糊的未知错误。
 
@@ -512,16 +520,20 @@ flowchart TD
 
 时间也成了一种会触发会话的事件源（实验性，`experimental.schedules` 开关，提交 4585c316c3）。它解决的问题：有些活不需要人盯着——"半小时后提醒我看看测试跑完没有"、"每天早上跑一遍构建"，这些都应该由系统到点自己发起。`packages/core/src/schedule.ts` 把定时任务存进一张 SQLite 表（迁移 `20261026223005_schedule`）：一条任务指定何时（`when`：`in` 一段时长后、`at` 某个时刻、`every` 固定间隔、`cron` 表达式，可带 IANA 时区，`packages/schema/src/schedule.ts:38-49`）、做什么（`action.prompt`，一段提示词）、投给哪个会话，可选结束时刻与剩余次数。
 
-到点触发就是向该会话以 `steer` 投递方式发一条提示（`schedule.ts:205-210`）：消息 ID 由任务 ID 与第几次运行推出（`msg_<任务ID>_<次数>`），崩溃后重试与此前的受理对得上、不会重复投递；晚于到期 60 秒以上的触发标记为 late。周期任务错过的时间槽不补发——`every` 保持相位、跳过所有错过的槽（`schedule.ts:116-120`），提示词失败的任务 5 分钟后再试，所在位置关着开关时每小时再看一次。全部状态在表里，所以恰好只有一个进程能跑触发循环：受管的服务进程（`packages/server/src/process.ts:114` 把 `Schedule.Service.run` 挂在应用作用域下），循环至少每 30 秒重读一次表，时钟跳变与丢失的唤醒都能被追上。一次性的 `in`/`at` 任务跑完即终态。
+到点触发就是向该会话以 `steer` 投递方式发一条提示（`schedule.ts:266-272`）：消息 ID 由任务 ID 与第几次运行推出（`msg_<任务ID>_<次数>`），崩溃后重试与此前的受理对得上、不会重复投递；晚于到期 60 秒以上的触发标记为 late。周期任务错过的时间槽不补发——`every` 保持相位、跳过所有错过的槽（`schedule.ts:150`），提示词失败的任务 5 分钟后再试。
+
+这个功能仍标着实验性，且默认关：配置里要写 `experimental.schedules: true` 才启用（`schedule.ts:216-225` 判断严格等于 `true`；提交 da87c475a7 把默认改回关，恢复 opt-in 语义）。所在位置没开开关的任务到点不投递，标成 disabled、一小时后再看——为什么隔这么久，注释交代了原因：读开关本身会把任务的会话位置拉起来，每个周期都查就等于逼着所有位置常驻；行里的到期时间原样保留，开关重新打开后按错过的时间槽追上（`schedule.ts:450-455`）。
+
+全部状态在表里，触发循环就不必绑在某个特殊进程上：每个 server 进程都跑一份循环（`opencode serve`、`--standalone`、被嵌入的服务皆然，`packages/server/src/process.ts:114-115`），至少每 30 秒重读一次表，时钟跳变与丢失的唤醒都能被追上；共享同一数据库的进程靠 KV 表里的一行租约选主，至多一个活跃的 leader（`schedule.ts:75-77`），租约 60 秒过期、持有者每 20 秒续期（`schedule.ts:95-97`、`:593`），每轮触发前先确认自己仍是 leader（`schedule.ts:450`），没抢到的进程这一轮空手而归。一次性的 `in`/`at` 任务跑完即终态。
 
 到点不一定要唤醒会话：任务可以带 `if` 条件（到点先查，通过才投递提示）和 `until` 条件（满足即停，`packages/schema/src/schedule.ts:136-137`）。`shell` 条件跑一条命令，按退出码或输出判定，可选 `is`/`matches`/`changes` 三种谓词之一，输出截到 32KB、30 秒超时（`packages/core/src/schedule/check.ts:11-12`；条件机制由提交 c784d17b83 引入）。`code` 条件在受限的 Code Mode 运行时里跑一段代码：不调模型、没有网络，`tools.<路径>(...)` 形式的工具调用由静态扫描从语法树里提取、建任务时就逐个授权（`packages/schema/src/schedule.ts:86-95` 的文档注释，提交 c24c5af3d8）；程序拿到 `state`（上次检查留下的状态，初始 null）、`now`、`runs`，返回布尔或 `{ wake, state?, message? }`。
 
-定时检查是无人值守跑的，围栏因此格外紧，有两条值得记：排程类工具（建/停/续/删任务、改会话、动 worktree）在检查代码里直接禁止，检查不能自己再造任务（`check.ts:20-29`）；建任务时的授权不保存——"总是允许"会存成项目级放行，而定时检查是无人值守跑的，一次点击换不来永久通行（`check.ts:237`）。检查连续失败会计数并暂停任务，语法错误、未知工具这类"检查本身坏了"的失败更是立即暂停（提交 055a2a9c13）；带检查的任务最短间隔 15 秒，不带检查的 1 分钟（`packages/core/src/schedule.ts:579-582`）。创建入口从配置一侧扩到三处：agent 的 schedule 工具、`/schedule` 斜杠命令、实验 HTTP API（提交 fbb47c995e）。一个任务从建到停的完整生命周期是：
+定时检查是无人值守跑的，围栏因此格外紧，有两条值得记：排程类工具（建/停/续/删任务、改会话、动 worktree）在检查代码里直接禁止，检查不能自己再造任务（`check.ts:20-29`）；建任务时的授权不保存——"总是允许"会存成项目级放行，而定时检查是无人值守跑的，一次点击换不来永久通行（`check.ts:237`）。检查连续失败会计数并暂停任务，语法错误、未知工具这类"检查本身坏了"的失败更是立即暂停（提交 055a2a9c13）；带检查的任务最短间隔 15 秒，不带检查的 1 分钟（`packages/core/src/schedule.ts:88-89`）。创建入口从配置一侧扩到三处：agent 的 schedule 工具、`/schedule` 斜杠命令、实验 HTTP API（提交 fbb47c995e）。一个任务从建到停的完整生命周期是：
 
 ```mermaid
 flowchart TD
     CREATE["建任务：when + action.prompt + 目标会话<br/>（agent 工具 / /schedule 命令 / 实验 API）<br/>code 条件的工具调用此时逐个授权，且授权不保存"]
-    CREATE --> LOOP["受管服务进程的触发循环<br/>至少每 30 秒重读一次表"]
+    CREATE --> LOOP["每个 server 进程跑循环、租约选出唯一 leader<br/>至少每 30 秒重读一次表"]
     LOOP --> DUE{"有任务到期？"}
     DUE -->|"没有"| LOOP
     DUE -->|"有"| IF{"带 if 条件？"}
@@ -548,7 +560,7 @@ OpenCode 的核心逻辑跑在一个本地 HTTP 服务里（`server/server.ts`�
 
 接入走一条私有的本地字节流（Unix socket 或 Windows 命名管道）加一份原子注册文件：socket 落在仅属主可进的私有目录，默认在 /tmp 下、可用 `OPENCODE_PTY_SOCKET_DIR` 挪走；清扫其他实例遗留的 socket 时，优先按对方注册文件里登记的路径找，且只删属于当前用户的（提交 5f394f64fc）。订阅一个终端的输出流改为阻塞等待事件，不再每 100 毫秒醒来轮询一次；守护进程被要求关停时，阻塞中的空闲订阅仍会被唤醒并正常关流（提交 f5cac1277c）。主循环也不再空转：Unix 上守护进程在监听 socket 与一对私有唤醒 socket 上 `poll(2)` 睡眠，直到有连接到达、停止或所有权变更把它叫醒、所有权到期、或两秒的安全网到时；Windows 仍按固定间隔轮询，每 25 毫秒一次（`packages/process-daemon/README.md:70-71`、`src/transport/windows.rs:42`，提交 0610a81fc3、86ce19d96e）。停止与所有权的变更统一经 Control 通道走（提交 f0160a1262），所有权状态区分"已拥有"与"等待中"两相、共用代数与截止时间（`src/ownership.rs`）。
 
-终端从属于会话，生命周期跟着会话走：创建持久终端必须给一个真实存在的目录——PTY 库原本会在目录无效时悄悄退回用户主目录，现在直接报错（`packages/core/src/persistent-pty/index.ts:168-176`，提交 756f832902）；会话被删除时，它名下的终端一并移除（提交 06bf854d0c）。客户端一侧，持久终端的协议处理抽成了共享实现（`packages/client/src/solid/pty.ts`），TUI 的终端面板等界面共用同一份（提交 067b741783）。
+终端从属于会话，生命周期跟着会话走：创建持久终端必须给一个真实存在的目录——PTY 库原本会在目录无效时悄悄退回用户主目录，现在直接报错（`packages/core/src/persistent-pty/index.ts:184-192`，提交 756f832902）；会话被删除时，它名下的终端一并移除（提交 06bf854d0c）。客户端一侧，持久终端的协议处理抽成了共享实现（`packages/client/src/solid/pty.ts`），TUI 的终端面板等界面共用同一份（提交 067b741783）。终端现在也可以有名字：持久终端支持重命名（`packages/core/src/persistent-pty/index.ts:285-290` 的 `rename`），新标题经协议存到守护进程；对面的守护进程太旧、不支持这项能力时明确报 UnsupportedError，不悄悄忽略（提交 65c0d83f4d）。桌面应用同期把自带终端挪到持久 PTY 上（提交 ef712d3a78），与 TUI 共用同一套实现和生命周期，桌面侧净删约 1600 行。
 
 ### 一个被拆掉的能力：会话分享
 
@@ -599,3 +611,4 @@ OpenCode 的核心逻辑跑在一个本地 HTTP 服务里（`server/server.ts`�
 - 2026-10-29 基于 commit 77a0fd6f3b 补充：定时任务（实验性 experimental.schedules，schedule.ts 存 SQLite 表，when 为 in/at/every/cron 带时区，到点以 steer 投递提示、消息 ID 由任务与次数推出、错过的槽不补发、失败 5 分钟重试、只有受管服务进程跑触发循环且至少 30 秒重读一次）；freeform 工具（单一必填字符串参数写成原始文本或按 regex/lark 文法，OpenAI Responses 与 Chat Completions 作 custom tool 发送、无回退）；Code Mode 扩展全局可返回 Effect（before 钩子放行后启动、依赖并入运行时环境）、before 钩子先于宿主调用、search 可 await/链式、解析错误带位置与提示；主请求输出上限留窗口 1% 余量而压缩请求不留；process-daemon 主循环 poll 等待而非轮询、Windows 25 毫秒、停止与所有权经 Control；元信息块"笔记基准"自 82b572439c 补齐到当前基准。另记小项：subagent 工具说明告知可向运行中的 subagent 发后续消息（0e102908e3）；/reload 重载配置（35a4a6876d）；实验性 SDK 方法归到 client.experimental（9a9386edbc）；app 可选 experimental-media-uri 且草稿媒体字节留在本地（f822b107e9）；后台 shell 的输出可从 pill 查看（97fd7acc41）；长用户消息可折叠（实验设置，651032bc27）；迁移的 V1 主题按新设计排布（b7992598be）；ai 包：OpenRouter/DigitalOcean/Venice 的 Responses 路线（dd35fbc2f4）、移除 fal/Black Forest Labs/Replicate/Stability（dfa63293df）、MiniMax 图像生成（7461d15208）、provider model() 设置可选（0416987a6c）、Promise 客户端暴露压缩（ced73dc0f6）、默认请求内联图片字节（506ac20c80）、移除捆绑的 cohere/vercel/perplexity SDK（fc6922f6b8）；process-daemon 发布 0.3.2（4d33928e25）。
 - 2026-10-30 基于 commit a070e11643 补充：/goal 目标循环（评审提示词只认对话内证据、不认助手自称完成，判决 done/continue/blocked/paused/wait，最多 50 轮、连续 3 轮无工具调用、等后台 30 分钟三道上限，状态存插件存储分叉不继承、记进程启动 ID 重启后回 paused，写前重读防覆盖用户指令）；内置图像生成工具 experimental_image_generate（后台任务式、有可用图像模型才注册并随目录重评、配置字段降为偏好、说明要求未被要求先询问）；定时任务条件检查（if/until 条件，shell 条件按退出码或输出判定，code 条件在受限 Code Mode 运行时静态扫描工具调用并建任务时授权、授权不保存，排程类工具在检查代码中禁止，检查连续失败暂停、坏检查立即暂停，创建入口扩为 agent 工具、/schedule 命令与实验 API）；shell 命令分析换成手写解析器（tree-sitter WASM 依赖删除，正文陈旧引用 permission/arity.ts 随改 shell/parse.ts），参数中间的文件重定向、PowerShell 方法调用与动态目录变化纳入权限扫描；策略动作从三类拆为七种（新增 integration.connect、integration.use 限定到集成账号，mcp/skill/plugin.use 拆分、旧前缀写法解码时自动转换）；部件存储拆出 session_part 表（读历史按序号装回、旧行内联可读、分叉时内联复制）；持久终端生命周期（cwd 必须真实存在否则报错、会话删除连带移除终端、客户端协议抽共享实现）。另记小项：MCP 工具失败保留权限原因与用户反馈（b653a6260f）；Code Mode execute 进度最多每 100 毫秒一发（b6f82bf15e）；告知 Code Mode 模型内置工具保持在顶层（aaa0d7c8f6）、for...in 遍历继承的可枚举键（ecc075a043）；fork/导入会话的媒体字节也存 blob（510aa79d07）；会话记录最近一次执行开始时间（d500927b9d）；插件服务器事件流跟随端点（5c0376f949）；Codex 登录目录提供 gpt-image-2（d142014e41）；OpenRouter 图像编辑按输入引用发送（27641b362e）、图像尺寸按各家协议期望发送（78c31ea68c）；TUI 存储图像按引用加载（84aed13ac8）；image job 通知带任务 ID（28a3974efc）；发布 v2.2.1、v2.2.2，process-daemon 发布 0.3.3、0.4.0。
 - 2026-10-30 结构重构：按特性端到端的标准重写全文——每个机制补问题引子与完整执行路径，新增收件箱与执行声明、目标循环、压缩三级减负、后台预计算摘要、权限询问流程、策略与权限双层把关、模型目录获取、事件流编码分发、部件表读写、定时任务生命周期等十余张 Mermaid 图；机制描述与引用保持原状，不引入新事实。
+- 2026-10-31 基于 commit 958f965d35 补充：Claude Agent 提供方（f29e281322，PR 58782：经 Claude Agent SDK 驱动本机 claude、用户自己的 Claude Code 登录、系统提示词沿用 Claude Code 加 opencode 指令叠加、工具以 mcp__opencode__ 前缀 MCP 桥接、每会话长驻进程空闲 5 分钟停、老版本查出即报错）；实验 artifacts 工具组（8f0fc21e71，PR 60351：标题加文件映射加入口文件的工件，create/read/update/delete 四工具，提供方接口四个操作各是一个 Effect、内置 local 可插拔）；定时任务触发循环改为每个 server 进程都跑加 KV 租约选主（60 秒过期、20 秒续期，正文随改"受管服务进程"旧表述与三处漂移行号），experimental.schedules 默认改回关（da87c475a7，关着位置的任务标 disabled 一小时后再看、到期时间保留）；压缩提示词上限取输入窗口与上下文窗口较小者（cb1e58fe44）、compaction.buffer 接受百分比写法（6700dd87b5）；思考块重放不再降级成正文（822594b9ae，PR 60498：要求签名的丢弃、qwen/minimax 按原样发、Gemini 固定标记顶替、Mistral prefix 标末条）；后台任务恢复标记从 KV 搬进专用 job 表（664c8f0990，迁移 20261030054400_job）；Code Mode 的 fetch 过 webfetch 同一套权限（bdca40ac0e）；持久终端可重命名（65c0d83f4d）、桌面终端迁移持久 PTY（ef712d3a78，桌面侧净删约 1600 行）；stdio MCP 自行分帧、单条 16 MiB 上限（1a443ae42a）。另记小项：bash 工具名别名到 shell（ea982d7d8f）；ai 对象统一 Promise 与 Effect 两个入口（f0944f027b）；本地配置可覆盖 Console 下发的提供方（5759491ca0）；AI 错误保留 partial 输出（2d96b0f69f）；插件提供的模型变体得以保留（8f11d59d4c）；loopback 请求不走环境代理（78dda62d88）；发布 v2.2.3、v2.2.4。
