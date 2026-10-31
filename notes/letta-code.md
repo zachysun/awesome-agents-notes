@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `ebc496e`（2026-10-29，v0.34.33） |
+| 笔记基准 | commit `e2b62e2`（2026-10-30，v0.34.35） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `ebc496e`（2026-10-29）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `e2b62e2`（2026-10-30）。
 
 ## 它要解决什么问题
 
@@ -50,6 +50,8 @@ letta-code 的记忆系统叫 MemFS（memory file system）。每个 agent 在 `
 3. 元数据块（agent id、会话 id、历史消息数）拼进去；
 4. 替换模板占位符——模板里没有占位符就追加到末尾（`:380-385`）；
 5. 可用技能清单以 `<available_skills>` 追加在最后（`:391-421`）。
+
+上下文的第三部分——压缩摘要——有一个保底分支（提交 `7f9d42d`，PR 5133）：完整压缩产出的摘要加保留消息仍然装不下时，压缩被判为"不可约"，此时不再让本轮失败，而是从最旧一侧按轮整体丢弃消息，直到剩余内容装得下；每一轮连同它的工具调用和结果一起消失，工具结果不会脱离调用单独存活；最近一轮用户消息始终保留，"较旧消息因压缩无法再缩小上下文而被丢弃"的警告替代摘要写入（`src/backend/local/compaction.ts:83,127`）。该分支只在上下文溢出触发压缩时启用，从最旧侧找不到可丢弃的轮次时放弃丢弃。
 
 记忆的分层有明确的权威定义（`src/agent/prompts/letta_root_memfs.md`）：core（在上下文里）、external（按需读）、recall（全部消息历史，由 harness 自动存、不可变、永不注入——要查历史得自己调工具）、skills（程序性记忆，"怎么做某件事"的技能文件）。四层对应四种访问成本：免费的、一次工具调用的、一次检索的、一次技能加载的。
 
@@ -132,3 +134,4 @@ flowchart TD
 ## 修订记录
 
 - 2026-10-30 初版：基于 commit `ebc496e` 完整成文。覆盖 MemFS 记忆模型与四层分层、git 编译式上下文构造、钩子化的写入纪律、reflection worktree 流程、双后端能力位与本地无数据库持久化；说明 letta-ai/letta 已归档、本文以 letta-code 为准。
+- 2026-10-31 基于 commit `e2b62e2` 补充：本地后端压缩新增"不可约"保底——完整压缩仍装不下时按轮从最旧侧丢弃历史、保留最近一轮用户消息，警告替代摘要写入（PR 5133，compaction.ts）。
