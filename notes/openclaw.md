@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript（另有 Swift 客户端） |
-| 笔记基准 | commit `1f86195956`（2026-10-31） |
+| 笔记基准 | commit `7232a8de67`（2026-11-01） |
 
 OpenClaw 是一个开源的个人 AI 助理项目，主体用 TypeScript 写成，加上一套 Swift 的 iOS/macOS 客户端。它在自己的电脑上跑一个常驻的网关程序，把你已经在用的聊天软件（Telegram、Discord、WhatsApp、Slack、iMessage 等 20 多个渠道）统一接到 AI 上，另有 macOS、iOS、Android、Windows、Linux 原生应用。代码规模很大：`src/` 下有上万个 TypeScript 文件，`extensions/` 下有 170 个扩展，`packages/` 下还有 20 多个共享包。它解决的核心问题是：让一个能执行命令、读写文件、替你发消息的 AI 助理，把状态、记忆和账号凭据全部留在你自己的硬件上，同时用写死的规则而不是模型的临场发挥来做安全决策。项目由独立的 OpenClaw 基金会（美国 501(c)(3) 非营利组织）维护，MIT 协议，没有付费版和托管服务。
 
-这份笔记按问题组织，不按 OpenClaw 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次连接、一条消息、一次批准、一次升级"从头走到尾。项目演进过程放在文末修订记录里。笔记起于本地 HEAD `20eebbd5c7`（2026-09-21），跟进到 commit `1f86195956`（2026-10-31）。
+这份笔记按问题组织，不按 OpenClaw 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次连接、一条消息、一次批准、一次升级"从头走到尾。项目演进过程放在文末修订记录里。笔记起于本地 HEAD `20eebbd5c7`（2026-09-21），跟进到 commit `7232a8de67`（2026-11-01）。
 
 ## 它要解决什么问题
 
@@ -163,11 +163,15 @@ flowchart LR
 
 **推理-only 回合撞上输出上限，不再发起无效的付费续写**（提交 ab7631a256，关联上游 #88656）。provider 重放（把已有消息重新发给厂商让模型续写）有个上游行为：只含推理、没有正文的回合若是在输出 token 上限处截断的，重放时会整个排除——模型根本看不到它。但推理-only 的恢复逻辑此前仍会让模型"从这个半截回合继续"，发起一次注定没有上下文依据的付费重试。现在续接资格复用重放的判定：重放里不含的回合直接以输出上限的结果收尾；重放里包含的推理-only 停止照旧可以续接；厂商明确返回的结构化拒绝仍是终态。
 
+**回合中途的上下文硬边界不再依赖开关**（提交 e44b8f4491，PR 189810）。OpenClaw 有一个"回合中途预检"（midTurnPrecheck）：在工具轮次之间检查上下文压力、必要时先压缩，但它挂在默认关闭的配置后面——没开的时候，一次超长的工具回合可以把上下文直接撑过窗口。现在软阈值仍由 `midTurnPrecheck.enabled` 控制（默认 false），**硬边界改为总是执行**（`src/agents/embedded-agent-runner/run/attempt-setup.ts:436-453`）：每次检查保留一份 token 预留——配置的预留值与 20,000 的下限取大者（`src/agents/agent-settings.ts:11`），确认这一步不会越过窗口；真要越界时抛出信号、走既有的安全恢复——截断工具结果或先压缩再重试（`src/agents/embedded-agent-runner/run/preemptive-compaction.ts:322`）。采用"推迟压缩"策略的会话豁免，它们自己拥有压缩时机。软检查可以关，"一定不越窗"的底线不随开关走（配置帮助文本明写这条区别，`src/config/schema.help.agents.ts:163-167`）。
+
 ## 会话与队列
 
 会话（session）是"一段持续对话及其状态"的单位，用 `sessionKey` 标识。文档特别提醒：`sessionKey` 只是路由选择器，不是授权令牌，别把它当成安全边界。
 
 同一个会话的多个运行串行排队，防止两个运行同时改一份状态。聊天渠道的消息进来时可以选择排队模式（steer、followup、collect、interrupt）：比如"steer"让新消息改变正在进行的运行方向，"interrupt"打断当前运行直接处理新消息。这些模式最终都汇入同一个会话队列系统，用户在聊天软件里发一句"换个思路"，就能实时影响正在跑的任务，这是助理型产品的关键体验。排队里的后续消息在轮到自己时接管自己的派发回调：此前排在其后的回合会在前面的回合结束时拿到对方的回调——那条请求结算时授权已释放，第一条进度更新就报"操作者执行授权已失效"，把已经完成的回合标成失败（提交 d38a8d3171）。
+
+**没被模型看见的插话要能证明、能归还**（提交 36adaa89cf，PR 186619）。一条 steer 送进进行中的回合后，若回合在模型看到它之前就失败（上游在请求前拒绝、瞬时错误重试），这条插话可能随失败一起从历史里消失——用户说过的话没了下文。现在内置运行时在 120 秒的转录投递期限内，若能证明"那条排队的消息确实在提交前被移除"，就把这条输入按原队列位置归还为 followup 重跑；活跃回合已接纳的更晚插话留在原处、不重放。证明不了的超时不归还——运行时可能仍在处理那条输入，重放有重复风险（`docs/concepts/queue-steering.md:34-36`）。"插话被撤回"从一句记录变成了带证据、可恢复的状态。
 
 子运行（父 agent 派生出去的 subagent 运行）的续接权限统一按持久化的 `spawnedBy` 血缘来定：在共享的运行留存边界上，从血缘里选出谁有权续接，原生 subagent 的准入例外被移除，子血缘穿过 agent、chat、Talk 三条准入路径；一个被中断的子运行，在它恢复后的父运行结束之后仍能通过 `sessions_send` 续接，来源校验、范围与模型上限、撤销、父 Stop 取消都照旧（提交 76cf9fe14c）。让出（yield，子运行主动暂停把控制权交回）的收集器有一条明确规则：没有记录结果就持久化为 yielded 的收集器永远不能再续接，注册表清扫器显式把这类行结算掉（保留让出时间作为结束时间），`agents_wait` 等它时返回 failed 带诊断，而不是永久挂起（提交 72ffe36e12）；可续接的让出叶子会显示已暂停多久（提交 bf6ed0e146）。让出状态随后落到了界面的两侧：被让出的子运行在会话列表上按"已暂停"显示（提交 4b6a38ada0）；确认让出的提示以 agent 文本出现在对话里，并一并列出在等哪些会话（提交 0ab9fc06cc）——让出不只是后台记录里的一个状态，对话里的人也看得见谁在等谁。
 
@@ -175,7 +179,7 @@ flowchart LR
 
 **委托出去的活归到发起它的人名下。** 通过操作者工具新建的委托会话与自动化，默认保留"核实过的发起人"作为创建者（creator），不需要开 Labs 开关；被指派的所有者（assigned owner）仍是另一个概念——仅改指派不转移创建者权利，分享、公开链接管理、归档、恢复仍归创建者。文档把边界写得很直白（`docs/concepts/session.md` "Creators and assigned owners"，提交 3097ceed22）：被选中的工具使用者提供的是执行授权，不能证明任务是它发起的；没有可归属人类的自主工作记为 agent/system 创建。归属影响发现、创建者控制与无所有者时的个人档案回退，不改变执行身份、模型与工具权限、沙箱身份，也不会自动公开会话。归属存在既有创建记录里：旧版运行时忽略这段附加归属、按自己的旧规则办事，写回时保留记录，回到新版归属仍在。发起人也停得掉自己的活：已获授权的个人操作者可以跨设备停止**自己发起的**工作（提交 5573fd0771）——其他发起者的工作与会话的确切归属不受影响，"创建者管自己的东西"从权利延伸到了动作。
 
-扩展行为靠两套 hook（钩子，在固定时机被调用的回调）系统：内部的 `HOOK.md` 脚本响应命令和生命周期事件；插件 hook 则是带类型的 `api.on(...)` 处理器，挂在 agent 循环和网关 pipeline（pipeline 指请求从进来到出去经过的处理流程）的固定位置，比如 `before_tool_call`（工具调用前拦截）、`message_sending`（消息发出前可以取消）、`before_compaction`（上下文压缩前后观察）。`{ block: true }` 这类阻断性返回是终态，会拦住后续低优先级的处理器；返回 `{ block: false }` 则什么都不做，也不会清除先前的阻断。
+扩展行为靠两套 hook（钩子，在固定时机被调用的回调）系统：内部的 `HOOK.md` 脚本响应命令和生命周期事件；插件 hook 则是带类型的 `api.on(...)` 处理器，挂在 agent 循环和网关 pipeline（pipeline 指请求从进来到出去经过的处理流程）的固定位置，比如 `before_tool_call`（工具调用前拦截）、`message_sending`（消息发出前可以取消）、`before_compaction`（上下文压缩前后观察）。`{ block: true }` 这类阻断性返回是终态，会拦住后续低优先级的处理器；返回 `{ block: false }` 则什么都不做，也不会清除先前的阻断。策略钩子查看"本回合授权了哪些工具"也多了一个口子（提交 c3a084d3d8）：`PluginHookToolAuthority` 新增可选的 `list()`（`src/plugins/hook-agent-context.types.ts:21-22`），返回本次回合授权名单的冻结快照——排序、去重、只读（`src/plugins/hooks.ts:848-851`），宿主撤销或派发结束后再调用直接报错；克制动与既有的 `allows()` 一致。这个方法是可选的，旧宿主上不存在——插件先做特性检测，没有就按"名单不可枚举"处理，不能当成宿主出错（`docs/plugins/hooks/prompt-and-session.md:184-190`）。
 
 **上下文压缩默认走服务端**。在 OpenAI 和 Anthropic 的 API-key 路线上，压缩默认是 provider-native（服务端压缩：对话全文保持在服务商的检查点里，客户端不再自己跑一遍摘要模型）。此前两条路线的默认并不一致：OpenAI 路线的自动压缩已走 `/responses/compact`，手动 `/compact` 却总是本地摘要；Anthropic 路线的阈值压缩更要手动打开——统一成默认服务端，并顺带修掉这条路径上实测暴露的三个缺陷。压缩在哪一端做，牵动成本、隐私边界和 hook 能观察到什么，默认对齐到服务端是个明确的取舍。ChatGPT 登录路线的服务端走法是搭一次普通请求的便车：
 
@@ -282,6 +286,10 @@ Knowledge 的两条边界各自定了规矩。一是**谁能读私有知识**：
 
 PostgreSQL 路线上再往后的一批工作有个共同主题——批量化。网络数据库每次往返都有延迟，单文件 SQLite 上无所谓的逐条操作，到了服务器级数据库就得攒成批：会话条目的预编译写入合并（提交 31feec8be8）、转录水合（从数据库把会话历史读回内存）改为批量（提交 6f1949e179）、会话成本发布语句批量（提交 bead2a8e54）。
 
+**PostgreSQL 上跑起来之后，备份与隔离各有自己的形状**（均为 2026-11-01 合并）。备份侧（提交 4fb684e294）：当所有便携数据库家族都上了 PostgreSQL，可以打一种"本地伴生检查点"（local companion checkpoint）——归档本地文件、固定本地的 SQLite 库（含客户端凭据）与 PostgreSQL 的**锚点**（登记信息），不导出任何 PostgreSQL 行；校验与恢复离线检查这些锚点、不连数据库，恢复时用 `--target` 加 `--local-companion` 指明这是本地重启用的检查点（`src/commands/backup-restore.ts:294-296`，`docs/cli/backup.md`）——文档写明它不是灾难恢复：服务器数据本身仍靠数据库自己的备份。配套把"保留源工件"（preserveSourceArtifacts）的决策前置到备份创建时（提交 f33e48e672），SQLite 快照的保留与后续处置不再靠恢复端猜。隔离侧（提交 8186cba2d8）：沙箱环境的变量清洗把网关凭据的判定接了进来（`src/agents/sandbox/sanitize-env-vars.ts:104-108`）——PostgreSQL 连接串这类网关凭据不再跟着环境变量流进子进程，沙箱里跑的工具拿不到它们。
+
+**数据库慢了，要能说出是谁占着**（提交 14ad84c381，PR 189705）。网关的 SQLite 访问要过准入（admission，"同时放 N 个人进场"的计数机制，见上面的恢复信号量），一个连接等久了，此前只知道"等得久"，不知道在等谁。现在准入上下文记录持有者（`src/infra/sqlite-database-admission-context.ts`），慢等待的归因随 WebSocket 日志与连接处理器带出去（`src/gateway/ws-log.ts`、`src/gateway/server/ws-connection/message-handler.ts`）——排查"会话卡住"时能直接看到占用方；文档同时把这条诊断的语义边界写清楚（`docs/reference/database-engines.md:987-999`）。
+
 **写入一致性：写者声明**。agent loop 文档描述了一个防止串数据的机制：每次运行开始流式输出前，先持久化记录一个 `activeWriterRunId`（当前有权写会话记录的运行编号）；之后每次追加或改写会话记录，都必须带上 `expectedWriterRunId`，写入事务里校验它仍然匹配。被取代的旧运行因此无法把过期数据写进记录。这就像图书馆的取号机：只有当前号码的读者能借书，拿着旧号的人会被柜员拒收。
 
 **恢复限流：给重活上信号量**。程序崩溃后重启，要把会话从 SQLite 里恢复，这是重活；几十个会话同时恢复会把网关压垮。`src/agents/main-session-recovery/main-session-recovery-capacity.ts` 用 30 行实现了一个信号量（semaphore，"同时最多放 N 个人进场"的计数器）：
@@ -385,6 +393,7 @@ OpenClaw 能替用户操作浏览器（打开网页、点按钮、填表单）�
 - 2026-10-27 文体修订：按"段落以问题为单位"的标准改写正文——变更清单式、时间线串联的段落改为问题立意（提交号降为注脚），过长段落按主题拆分；不引入新事实，机制描述与引用保持原状。
 - 2026-10-28 基于 commit 39e4093b65 补充：插件热重载回合交接（reload.turnHandover 声明、步骤边界换到新版本继续、整段运行租约交还工作量、刷新等待未完成发布，Knowledge 第一个启用）；Knowledge scribe 体系（自调度技能按声明键认领、Scribes 标签页启动与控制、提示词可读可编辑、Knowledge 工具进 coding profile）；Decision 提供方与用途扩散（Liquid AI 原生提供方、TypeSafe 托管 Jev 扩到图像、浏览器页面拦截物用 Decision 分诊）；让出状态落界面（会话行按已暂停显示、确认提示以 agent 文本列出在等的会话）。另记未入正文的小项：busy-session 消息自动化配整套安全预设（25da76e481）；个人会话分组（49aa6fca9a）；sessions_spawn 可给子任务选 cyber Access（94390ecb6b）；Skill Workshop propose 模式把后台学习变成草稿审阅（b073ac5c33）；普通 agent 回合可从 stdin 管道读消息（--message-file -，caf3034ae0）。
 - 2026-10-29 基于 commit 2742aa0166 补充：Claws 整体更名 Templates（功能名、命令名、文档路径 docs/cli/templates.md、$create-template 技能调用与 UI 样式文件名改名，CLAW.md 与 ClawHub 沿用；段落按现状改写，去掉未能核对的"按安装量排名"）；Knowledge 边界（所有者可授予群聊对私有分区的读或读加保存权限、Settings → Stores & sharing 管理；页面正文按读取代价设 budget——枢纽页 12,000 字符、其他页 24,000 字符，增长超限的写入拒绝、论断永不受限，knowledge_extract_section 抽章节保留链接与论断主语；knowledge-claim-consolidation 按范围合并论断、状态快照由结果取代且不能隐藏替代者）；LanceDB 记忆插件注册中立 providerRuntime（报告健康、经中立接口搜索与读取）；元信息块"笔记基准"自 3b3efe9539 补齐到当前基准。另记小项：worker 把自己的会话派发到角色授权的云档案（fd0403b40c）；原生插件 UI 无需 Labs 开关（de50262a1f）；交接等待行显示已暂停的子会话（9a35a81e23）；通知按显式标签识别已完成会话（845a0636b4）；mattermost 止住 bot 互回并加 allowBots（da579df307）；本地中继后的提供方保留托管空闲超时（9b59924f60）；遥测按无标识方式计数上报安装（fcd374fd1b）；qa 终端感知的逻辑模型计量（eb8196d4ea）；重复相同工具错误后允许有界恢复（21fdc279af）；会话资源按当前成员资格限定（a9b037d25c、99d2eadea8）；scribe 改名后显示需重新授权、Repair 不再打开它们（3d96ad74cf）；cron 保留固定的续跑（540a712aa0）；subagent 派生拒绝不能聊天的 ClawRouter 模型（01d66c79ae）；github_publish 或插件重载后 subagent 结果能回到父会话（8ea3ef8d86）；频道所有者被移除后其 subagent 保留原生运行时访问（3748a9d0c3）；另有多批 perf 提交未逐一列出。
+- 2026-11-01 基于 commit 7232a8de67 补充：回合中途上下文硬边界总是执行（midTurnPrecheck 软阈值默认关、硬检查带 20,000 token 预留下限、越界走安全恢复，推迟压缩会话豁免）；没被模型看见的 steer 可证明撤回并按原队列位置归还为 followup（120 秒转录投递期限内、证明不了不归还）；策略钩子可 list() 授权工具名冻结快照（可选方法需特性检测、克制动与 allows 一致）；PostgreSQL 本地伴生检查点（备份存锚点不导行、恢复 --target --local-companion、非灾难恢复）与源工件保留前置、PG 凭据经网关凭据判定挡在沙箱子环境外；SQLite 慢等待按持有者归因（holderAtWaitStart/holderAtEnqueue、尽力而为非准入权威）。另记小项：Matrix formatted_body 与中断词标点两处 ReDoS（mentions.ts 正则回溯 7.5 秒降到 35 毫秒、abort 触发词标点连串同理，dfb6454b01、0a171b4f63）；Windows POSIX shell 审批保持一次性（83e5d76560）；插件安装发布源快照摘要（8e6129a813）；Responses 请求历史哈希增量链（WeakMap 存链式状态减少重复哈希，2c16bf5427）；CLI 有界的 stdin/文件提示词输入（1 MiB 上限，c8faf8aec7、a5d66ef1fb）；boards widget V2 授权（7232a8de67）。
 - 2026-10-30 基于 commit cb156d027f 补充：发起人可跨设备停止自己发起的工作（创建者权利延伸为动作，其他发起者与归属不受影响）；Knowledge 新增经 Granola 插件摄取会议记录的 scribe；学到的超大技能由 Workshop 每日维护瘦身（分支小节挪进 references/、restore 可逐字节还原、propose/off 不变）；cron.defaultTools 在创建者策略检查与审批之前给非空 toolsAllow 补默认前置工具（toolsAllowMode: "exact" 可退出）。本区间以修复为主（约 300 条 fix），另记小项：备份的 Git 导出脱敏捆绑插件凭据（186953）；PostgreSQL 会话搜索改为走全文索引而非逐行扫描（187909）；网关清陈旧回合认领时的瞬时数据库锁不再让启动失败（187724）；溢出摘要保留被摘要消息的发送者与房间事件上下文（187833）；记忆索引在网关截断 embedding 批量上限错误时仍能失败恢复（187797）；回合中创建的 goal 在委托工作结束后正常停止（183706）；resume 被升级前停止打断的会话只续一次（187867）；服务子锚废弃后 file-backed stdin 保持 fd 0（187803）；系统启动回合的主体权限改动合入又回退（5be92b4250 回退 187126，HEAD 不含）；GitHub/PR 发布就绪观察与待证明包的签名候选发布属项目自身的发布流程（e242709994、e088b3a863），未入正文。
 - 2026-10-30 结构重构：按端到端讲解的标准改写正文——新增一次工具调用的防线穿透图、图片进门四步检查图、服务端压缩时序图、密封代际激活流程图；正文一处禁用词随改（后台记录）；术语与引用保持原状，不引入新事实。
 - 2026-10-31 基于 commit 1f86195956 补充：插件重载与运行中回合的关系扩成三种语义（默认排空等待、reload.turnHandover 回合移交、generationOverlap 新旧并存——每代际独立拥有注册与服务、清理等最后持有者释放，并存优先于移交，memory-core 与 llm-task 已声明，正文按现状改写）；共享工作区记忆文件可限权（workspaceFileMode 四档八进制、条目级覆盖全局默认、按 umask 收敛、只影响新建的 MEMORY.md/DREAMS.md/dreaming 报告）。另记未入正文的小项：fallback 日记只留档不进上下文（FALLBACK_NARRATIVE 占位条目写入文件、组装上下文条目时被排除，dreaming-dreams-file.ts:271-275）；cron 条件触发安静化（quietTrigger 不发会话通知、不动会话 recency，triggerFired:false 持久化，webhook 照发，563ba501dc、5f15db71e8）；read 工具翻页即停（64KB 窗口流式扫描、取满即停，未到文件尾不输出 totalLines，29a02f29ea）；hooks 超时修复（亚秒 timeoutSeconds 忽略、正秒取整，配了超时的 HTTP 钩子继承截止时间到点即停——此前整体时限计算为零导致一直重试、5 秒钩子实跑约 40 秒，24e37a12dd）；云 worker 支持 bundle 插件模式（无 registry 供给、tar 安全校验，44e6b1b846）；repositoryBranchPrefix 配置（87ff32dbf3）；azure-sandbox 磁盘制备（77869fe257）；goal 支持恢复既有本地 Codex 会话（f2e7dcc378）；durable 进程经 systemd-run 托管跨网关重启存活（Linux 加 systemd≥250，20c1a15bb5）；转录查看器双向分页（3c8bd4daf6、b195f61511）；owner-guidance 指引注入（15db8cc635）。
