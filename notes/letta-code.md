@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `e2b62e2`（2026-10-30，v0.34.35） |
+| 笔记基准 | commit `91897d5`（2026-10-31，v0.34.36） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `e2b62e2`（2026-10-30）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `91897d5`（2026-10-31）。
 
 ## 它要解决什么问题
 
@@ -61,7 +61,7 @@ letta-code 的记忆系统叫 MemFS（memory file system）。每个 agent 在 `
 
 **历史检索靠 recall subagent**。需要翻旧对话时，agent 启动一个 recall subagent（`src/agent/subagents/builtin/recall.md:5-7`），它通过 conversation fork（分叉出继承父 agent 全部历史的一个临时会话）执行 `letta messages search`，支持向量/全文/混合三种模式（`src/backend/message-search.ts:11`）。注意：向量检索只在 Letta 服务端存在，本地后端的实现是纯词频打分的全文检索（`src/backend/local/transcript-search.ts:563`）——记忆文件本体从不建索引、不做嵌入，这是与 mem0/cognee 这类向量记忆路线的根本分歧。
 
-**写入就是改文件加提交**，git 钩子把住质量关（见主轴节）。每轮对话结束后，harness 调 `syncPendingMemoryCommitsAfterTurn` 检查未提交/未推送的变更（`src/agent/memory-git.ts:1833-1939`），并把仓库的脏状态以 `<system-reminder>` 注入下一轮上下文（`src/reminders/memory-git-sync.ts:58-80`）——agent 忘了提交时系统会提醒它。修复类问题交给后台 memory worker 处理（`src/agent/subagents/memory-worker.ts`）。
+**写入就是改文件加提交**，git 钩子把住质量关（见主轴节）。每轮对话结束后，harness 调 `syncPendingMemoryCommitsAfterTurn` 检查未提交/未推送的变更（`src/agent/memory-git.ts:1833`）。同步状态对模型不可见：可修复的问题交给后台 memory worker（`src/agent/subagents/memory-worker.ts`）；worker 修不完或失败时，提醒只写进宿主的调试日志与警告通道，明确不注入模型上下文（`src/reminders/memory-git-sync.ts:24` 注释原话 "never route memory sync status into model context"，落点在 `:209,231`）。也就是说，记忆仓库的同步完全由 harness 托管：agent 不用为同步分心，上下文里也不会出现同步提醒；代价是 agent 无法得知记忆处于脏状态，脏状态的处理责任在后台 worker 和宿主，不在模型。
 
 ## 自我改进
 
@@ -135,3 +135,4 @@ flowchart TD
 
 - 2026-10-30 初版：基于 commit `ebc496e` 完整成文。覆盖 MemFS 记忆模型与四层分层、git 编译式上下文构造、钩子化的写入纪律、reflection worktree 流程、双后端能力位与本地无数据库持久化；说明 letta-ai/letta 已归档、本文以 letta-code 为准。
 - 2026-10-31 基于 commit `e2b62e2` 补充：本地后端压缩新增"不可约"保底——完整压缩仍装不下时按轮从最旧侧丢弃历史、保留最近一轮用户消息，警告替代摘要写入（PR 5133，compaction.ts）。
+- 2026-11-01 基于 commit `91897d5` 补充：记忆同步状态改为只进宿主诊断通道（调试日志与警告），不再注入模型上下文，同步与修复由 harness 托管（PR 5398，memory-git-sync.ts）；相应改写"记忆的读取与写入"节。
