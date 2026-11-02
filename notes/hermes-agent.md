@@ -4,9 +4,9 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | Python（桌面端与终端界面为 TypeScript） |
-| 笔记基准 | commit `c419cf7c86`（2026-11-01） |
+| 笔记基准 | commit `9a56be3d86`（2026-11-02） |
 
-Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 6900 个 Python 文件，测试约 3.9 万条。
+Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 1.06 万个 Python 文件（其中 tests/ 下约 7500 个），测试约 3.9 万条。
 
 它最核心的卖点是内置了一条学习路径：干活、复盘、把经验保存成记忆和技能文件，下次遇到类似任务直接复用。官方把这条路径叫 learning loop（学习循环），是它和普通助手拉开差距的地方。
 
@@ -16,7 +16,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 
-这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一次复盘、一次到点任务"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `c419cf7c86`（2026-11-01）。
+这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一次复盘、一次到点任务"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `9a56be3d86`（2026-11-02）。
 
 ## 它要解决什么问题
 
@@ -41,7 +41,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 | `cli.py` + `hermes_cli/` | 命令行入口和全部子命令：配置、模型、插件、profile、更新器 |
 | `gateway/` | 网关；`platforms/` 下每个聊天平台一个适配器，新增平台有分步指南 |
 | `tools/` | 所有工具的实现，启动时自动发现注册；`environments/` 下是七种终端执行环境 |
-| `hermes_state.py` + 30 个 `hermes_state_*.py` | 会话存储层：SQLite 数据库、全文搜索、锁、消息身份、损坏修复 |
+| `hermes_state.py` + 62 个 `hermes_state_*.py` | 会话存储层：SQLite 数据库、全文搜索、锁、消息身份、损坏修复 |
 | `cron/` | 定时任务的存储与调度 |
 | `plugins/`、`skills/`、`optional-skills/` | 插件与技能，能力扩展的主要载体 |
 | `evals/` | 离线评估脚本：不联网、不打真靶子，验证关键行为没被改坏 |
@@ -49,7 +49,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 | `apps/desktop/`、`ui-tui/`、`tui_gateway/` | 桌面端、终端界面、两者共用的 JSON-RPC 后端 |
 | `website/` | Docusaurus 文档站，`developer-guide/` 下有各子系统的长文 |
 
-代码组织有一条贯穿全仓库的规矩，官方叫 facade + siblings（入口文件 + 兄弟文件）：每个原来几千行的大文件，拆成一个保持原有名字和公开接口的入口文件，加一组同目录、按主题命名的兄弟文件。比如 `hermes_state.py` 是入口，会话搜索在 `hermes_state_fts.py`，锁在 `hermes_state_lockguard.py`。找代码不靠啃入口文件，直接 `grep "def 函数名" 目录/主题_*.py`。这条拆分纪律让 6900 个文件没有变成几座巨石。
+代码组织有一条贯穿全仓库的规矩，官方叫 facade + siblings（入口文件 + 兄弟文件）：每个原来几千行的大文件，拆成一个保持原有名字和公开接口的入口文件，加一组同目录、按主题命名的兄弟文件。比如 `hermes_state.py` 是入口，会话搜索在 `hermes_state_fts.py`，锁在 `hermes_state_lockguard.py`。找代码不靠啃入口文件，直接 `grep "def 函数名" 目录/主题_*.py`。这条拆分纪律让一万多个文件没有变成几座巨石。
 
 用户数据都在一个叫 HERMES_HOME 的目录里（Linux/macOS 是 `~/.hermes`，Windows 原生安装是 `%LOCALAPPDATA%\hermes`）：
 
@@ -63,7 +63,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 第二个后端是 `remote`（提交 69d037b349，`plugins/config_backends/remote/`，用户文档 `website/docs/user-guide/remote-config.md`）：每个档案的用户层配置由"配置平面"（config plane，一套集中管理配置的服务）按全局、租户、群组、所有者、agent、档案自身的顺序分层解析后下发，上层可以锁定某个键，agent 改不动锁定的键。它面向成批部署的场景（比如 Hermes Cloud），单机单用户仍用 config.yaml。几条行为与文件后端不同。启动即取、取不到就退出：每个 Hermes 进程（网关、面板、CLI、终端子进程）加载 `.env` 时拉取档案配置，约 30 秒重试后仍连不上或被拒绝就带错误退出，绝不回退到本地文件或默认值——`ConfigBackendUnavailable` 故意继承 `SystemExit`（`config_backend.py:145-148`），因为许多配置读取方会 `except Exception` 后退回默认值，而"用默认值顶替所选后端的配置"正是这里不允许出现的静默失败；启动之后的平面故障只结束一次请求、一次触发或一个回合，不结束进程（提交 f4c54cd3cc）。没有本地文件也没有本地缓存：config.yaml 不读不写，运行中的进程把最近一次取到的配置留在内存，平面暂时不可达就沿用内存里的、下次轮询再试；轮询间隔 300 秒、下限 30 秒（`plugins/config_backends/remote/backend.py:38-45`），是代码常量而不是环境变量（提交 f292c4c357）。写只送差异：`hermes config set`、`/model`、面板等每个写入方只发改动的键，带比较并交换（CAS，写之前核对版本，别人先改了就重读再把自己的改动叠上去）与一次冲突重试，绝不撤销别人的改动；删除键只删档案一级，上层仍设置时上层值继续生效并给出警告。锁定键拒绝写入并报出锁在哪一级，整份文档保存时锁定键被剔除并列出。密钥不进平面：`api_key` 这类形状的键只接受 `${VAR}` 引用，值放 `.env` 或密钥源。迁移在内存里跑、不写回。平面凭据只来自 `auth.json` 的 Nous 令牌或身份提供方（IdP）的 client credentials 令牌，绝不来自 `secrets:` 源，且只发往配置的 https 源、不跟随重定向，明文 http 只允许回环地址（`plugins/config_backends/remote/destination.py:7`、`:71`，提交 55805716e7）；配置 URL 里的 user info 不回显（提交 748b71cef7）。受管的 `/etc/hermes/config.yaml` 在 remote 模式下被忽略、启动时警告；`hermes config edit`、档案克隆与改名、`hermes backup`/`import`、`hermes gateway --config` 这些要碰文件的命令被拒绝。
 
-**导入配置模块不再有副作用**（2026-10-31 合并的一组修复）。`import hermes_cli.config` 或 `hermes_cli.auth` 这类导入动作，此前会顺带读配置文件——于是在一个持有配置锁的调用栈里首次导入这些模块，就会在锁内触发文件读取，锁序问题（两把锁被不同的调用方按相反的顺序拿，谁也不肯先放，互相等到死）由此而生。现在的纪律是**导入零读取**：提供方环境变量的可选条目改为首次被读时才补算（`hermes_cli/config_defaults_env.py:9`，补算不持锁，并发首读各算各的、结果一致）；提供方注册表改为"首次读取前同步"（`hermes_cli/auth.py:260`，模块导入只装钩子，不碰配置）；插件模块用 PEP 562 的模块级 `__getattr__` 把重依赖推迟到真正访问属性时。连锁的几条间接读取也一并断掉：远端后端把凭据解析挪到抓取锁之外、持锁期间不打日志（`plugins/config_backends/remote/backend.py:58-66`）——日志格式化本身可能反过来要读配置；日志脱敏的格式化器只读预先记录在内存里的策略表（`agent/redact.py:138-160`），不在格式化路径上开配置文件；内置提供方目录的构建不读配置、不跑插件发现（`providers/__init__.py:829`，安全 worker 进程直接返回空目录）。"锁内绝不做可能反过来要锁的事"这条规矩，靠把每一条间接读取都断掉才成立。
+**导入配置模块不再有副作用**（2026-10-31 合并的一组修复）。`import hermes_cli.config` 或 `hermes_cli.auth` 这类导入动作，此前会顺带读配置文件——于是在一个持有配置锁的调用栈里首次导入这些模块，就会在锁内触发文件读取，锁序问题（两把锁被不同的调用方按相反的顺序拿，谁也不肯先放，互相等到死）由此而生。现在的纪律是**导入零读取**：提供方环境变量的可选条目改为首次被读时才补算（`hermes_cli/config_defaults_env.py:9`，补算不持锁，并发首读各算各的、结果一致）；提供方注册表改为"首次读取前同步"（`hermes_cli/auth.py:260`，模块导入只装钩子，不碰配置）；插件模块用 PEP 562 的模块级 `__getattr__` 把重依赖推迟到真正访问属性时。连锁的几条间接读取也一并断掉：远端后端把凭据解析挪到抓取锁之外、持锁期间不打日志（`plugins/config_backends/remote/backend.py:58-66`）——日志格式化本身可能反过来要读配置；日志脱敏的格式化器只读预先记录在内存里的策略表（`agent/redact.py:139-159`），不在格式化路径上开配置文件；内置提供方目录的构建不读配置、不跑插件发现（`providers/__init__.py:829`，安全 worker 进程直接返回空目录）。"锁内绝不做可能反过来要锁的事"这条规矩，靠把每一条间接读取都断掉才成立。
 
 ### 文件缓存的新鲜度判据
 
@@ -99,7 +99,7 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 ## Agent 循环
 
-回合循环本身并不神秘。`agent/conversation_loop.py` 里是一个同步的 while 循环：把对话历史和工具清单发给模型，模型要么回话（回合结束），要么发起工具调用；调用工具，把结果追加进消息列表，再来一轮。默认最多 500 次迭代，带 budget（额度）追踪和随时可打断的检查。工程含量在循环外围：
+回合循环本身并不神秘。`agent/conversation_loop.py` 里是一个同步的 while 循环：把对话历史和工具清单发给模型，模型要么回话（回合结束），要么发起工具调用；调用工具，把结果追加进消息列表，再来一轮。`agent.max_turns` 默认不设上限——配置注释写明上限曾造成任务中途静默截断，要封顶就给正整数（`hermes_cli/config_defaults.py:64-66`，`run_agent.py:241`）；循环带 budget（额度）追踪和随时可打断的检查。工程含量在循环外围：
 
 ```mermaid
 flowchart TD
@@ -118,7 +118,7 @@ flowchart TD
     TOOL -->|"否（纯回复）"| FIN["回合结束"]
 ```
 
-**每个阶段一个文件。** 请求前检查、发起 API 调用、处理错误、接住响应、执行工具、处理超长、恢复重试、生成收尾，各自住在 `agent/turn_*.py` 的一个文件里，改"超长处理"只碰 `turn_overflow.py`。回合阶段需要一整个命名系列来管理，这本身就说明生产级 agent 循环的主体不是循环，而是失败处理。举个例子：模型返回空响应时，有一条逐级升级的恢复梯子（先重试，再补一条提醒，再换续写方式），每级都守住"角色严格交替"的底线。
+**每个阶段一个文件。** 请求前检查、发起 API 调用、处理错误、接住响应、执行工具、处理超长、恢复重试、生成收尾，各自住在 `agent/turn_*.py` 的一个文件里，改"超长处理"只碰 `turn_overflow.py`。回合阶段需要一整个命名系列来管理，这本身就说明生产级 agent 循环的主体不是循环，而是失败处理。举个例子：模型返回空响应时，有一条逐级升级的恢复梯子（先重试，再补一条提醒，再换续写方式），每级都守住"角色严格交替"的底线。再举一个：卡流检测器量的是两个数据块之间隔了多久，每来一块就重新计时，所以一个一直在滴数据、却永远不结束的流永远不会被切断——网关一点一点地滴、模型失控地生成，回合就一直卡着。`agent.stream_max_lifetime`（秒，默认 0 即关闭）给整次流式尝试设总时长：来数据块不重置、每次重试重新计时、下限取当前生效的卡流超时（`agent/stream_max_lifetime.py:33-37`、`:66-71`，`hermes_cli/config_defaults.py:260`）；触发后按卡流同样的方式切断（取消尝试、关掉请求级客户端、关 socket）再交给重试或部分交付续写。被上限切断的流只计数、不进跨回合的卡流熔断器——服务商其实一直在回应，否则连着两个长回复被切，下一个健康请求还没发出就会被拒（`agent/chat_completion_stream_monitor.py:234-239`）；同一次尝试被切 3 次仍没退出就放弃这个工作线程（`:22` 的 `_STALE_ABANDON_KILLS`）。文档写明只覆盖 Chat Completions 与 Anthropic Messages 两种流。第一版带的 `HERMES_STREAM_MAX_LIFETIME` 环境变量覆盖在同一批提交里就被删掉——非密钥的行为设置只进 config.yaml（提交 ac8037c05b、eee418e089、b484be5610、c552db90bc）。
 
 **两条硬性消息不变量。** 消息用 OpenAI 格式（role 为 system/user/assistant/tool）。整个项目每改一行都被拿放大镜看两条规矩：一是对话进行中绝不改动已有上下文（主轴已述）；二是角色严格交替，不允许两条同角色消息相邻、不在循环中途塞伪造的 user 消息，因为一些模型服务商对此直接报错。用户在执行中途插话（`/steer`）的落点都专门设计过：作为独立的 user 消息插在最新工具结果之后，而不是涂到已保存的工具消息上。
 
@@ -131,6 +131,8 @@ flowchart TD
 **浏览器控制收敛成一条线。** 此前的浏览器能力分散在内置 `browser_*` 工具与 agent-browser 包两条路里，2026-10 下旬整体收敛：agent-browser 包删除，Chromium 成为一等公民——可执行文件按固定顺序解析（配置的 `browser.executable_path`、包管理器安装的、Docker 镜像内置的、系统安装的，提交 d46703d878），Python 侧的启动器与 `browser_session` 层（`tools/browser_session.py`）成为调用方的入口。配置随之迁移（配置版本 v52）：选择后端模式的 `browser.backend` 键废弃、`AGENT_BROWSER_*` 环境变量统一搬到 `browser.*` 键下（`hermes_cli/config_migrations_browser.py:2`）。
 
 **subagent 与脚本化。** `delegate_task` 生成 subagent：全新对话上下文、自己的终端会话、聚焦的任务描述；父代理只看到最终摘要，看不到中间过程，上下文不会被子任务的琐碎输出撑爆。子任务走哪条模型路线（用哪个模型、哪个服务商、哪个档案），2026-10 下旬起也成了可插拔的决策：`delegation.backend` 选一个委托提供方（delegation provider），每个后端自己的设置放在 `delegation.backends.<名字>` 下（`agent/delegation_provider.py:31`）。分工的原则是核心留住 subagent 的整个生命周期——拉起、隔离、深度与并发上限、后台完成、结果组装——提供方只回答"这个任务走哪条路"：返回一个路由（provider/model/推理档位/回退链，或一个 profile 名字，让子任务以那个档案的身份运行——配置、凭据池、技能、人设、终端策略都是那个档案的，唯独转录留在发起会话的库里，因为这份活是父会话的），也可以给 `delegate_task` 的参数表追加自己的枚举参数（比如档位名），让模型按任务挑路线。默认策略"subagent 跟随 delegation 配置段、空则继承父路由"本身也是一个插件（`plugins/delegation/default/`），与第三方走同一个注册口。失败处理是闭合的：配置的后端没安装或声明不可用，`delegate_task` 直接返回指名道姓的工具错误，不会悄悄退回默认后端（`agent/delegation_registry.py:121`）；拒绝按任务计——一批任务里某个路由不上，只有那一项记为错误条目，其余照常运行。切换后端的入口是 `/delegation` 命令，它的语义由子任务的参数表决定：`delegate_task` 的 schema（参数表）从活跃后端构建，而这份 schema 属于缓存的提示词——只切路由不切 schema，模型看到的参数和实际走的路由就会对不上。所以会话级的临时覆盖被整个移除（提交 552f735368）：`/delegation <后端>` 默认写入配置、从下一个会话生效；要让当前会话立即切换，得显式加 `--now`，在该会话的下一回合重建工具并重新固定——一次主动选择的缓存失效（`agent/delegation_backends.py:78`）。运行中的会话按"构建工具时所用的那个后端"路由：`agent._delegation_backend` 与工具快照一起保存、一起恢复（`agent/agent_init.py:1113`），配置文件中途怎么改都不影响已开的对话（提交 4b6c7f68d9）。`execute_code` 让模型写 Python 脚本、通过 RPC（远程过程调用，进程间拿结果的通信方式）调用工具，把"十步工具调用"折叠成一次脚本执行。
+
+后台进程的完成通知也有合并的规矩（提交 343a5f7f58、3030077ef0、33920f4b2f）。一个回合正在运行时，每个跑完的后台进程都会作为一个单独的排队回合进入会话的 FIFO（先进先出队列）：十个任务跑完，当前回合结束后就是十个背靠背的"后台进程已完成"回合，每个都把整段上下文重读一遍、却只回应一个结果。现在新的完成通知到达时，看同一路由在队尾是否已有一条等待中的完成通知：有就合成一条新的准入记录——两段正文、所有生产者身份、再加一个"N 个后台进程结果在会话忙碌期间到达，当成一批给一个合并回应"的头（`gateway/session_automation.py:150-152`），同一个数据库事务里取消那条等待行；两条通知之间插着用户提示时提示保持原位、不会被跨过去；等待行已被认领开始执行就单独排队。写入时在准入事务里再确认一次"被替换的行仍是最后一条排队输入"，不是就拒绝（`session_automation.py:250-255`）——否则读队尾与写入之间插进来的提示会把早先那条通知重排到提示之后；正在结束的那个进程自己的存活心跳不算队尾（`:136-138`）；被取消的行只留自己的身份、不再累积前面所有身份（200 次完成从 20,099 个身份、894 KB 降到 200 个、171 KB）。十个结果合成一个回合，就少了九次整段上下文的模型调用。
 
 ## 学习循环：记忆与技能的自动沉淀
 
@@ -160,7 +162,8 @@ flowchart TD
 
 - 环境性的临时故障（"命令没装"这类用户自己能修的事），不是持久规则；
 - 对工具的负面断言（"X 工具不能用"会变成模型此后几个月自缚手脚的借口，哪怕问题早修好了）；
-- 没走通的尝试（会话结束时没找到可行方法，不许把失败过程包装成"可靠工作流"存下来）。
+- 没走通的尝试（会话结束时没找到可行方法，不许把失败过程写成"可靠工作流"存下来）；
+- 推断出来的特质与被升格的一次性请求（提交 4a8cc6f705、b47fe6ecc6）：只存这段对话里有依据、能指到某条用户消息或工具结果的事实；不从话题、语气、用过的工具推断用户的水平、角色、情绪或偏好；一次性的"写短点"不升格为"用户偏好简洁"，除非用户自己标明是通用的（always、from now on、remember）或明确说了长期喜恶（I hate X、stop doing Y）——只列前三个关键词时模型把它当成必须出现的关键词表、漏掉"别到处放 emoji，我讨厌那样"；拿不准就不存（`agent/background_review.py:383-388`）。规则同时进两个记忆复盘提示词、不进技能复盘——只限定 USER.md 时，实测同一个猜测被挪进了 MEMORY.md（`tests/agent/test_memory_review_grounding.py:12-16`）；代价是每次复盘多约一百个 token。
 
 这份负面清单防的是 AI 记忆系统最常见的两种病：记垃圾，和记错的经验。
 
@@ -226,15 +229,15 @@ flowchart LR
 
 ## 模型接入与多路复用
 
-**模型目录与"原样保留"。** Hermes 维护一张预置模型目录（`hermes_cli/model_catalog.py` 等）：各家模型叫什么、上下文多长、什么能力。用户用 `hermes model` 选模型时就在跟它打交道。这里有一条被真实事故换来的规矩：用户输入的模型 ID 在目录里找不到时，系统**只给相似名字的建议，绝不擅自改写**。旧代码做过模糊纠正，把 `deepseek-v4.1-flash` 自作主张换成目录里的 `deepseek-v4-flash`，结果模型不对、回答不对，用户还蒙在鼓里。现在的规则：用户明确指定的值一个字都不动，直接发往服务商，模型不存在时由服务商的 400 报错揭示合法 ID 列表。
+**模型目录与"原样保留"。** Hermes 维护一张预置模型目录（`hermes_cli/model_catalog.py` 等）：各家模型叫什么、上下文多长、什么能力。用户用 `hermes model` 选模型时就在跟它打交道。这里有一条被真实事故换来的规矩：用户输入的模型 ID 在目录里找不到时，系统**只给相似名字的建议，绝不擅自改写**。旧代码做过模糊纠正，把 `deepseek-v4.1-flash` 自作主张换成目录里的 `deepseek-v4-flash`，结果模型不对、回答不对，用户还蒙在鼓里。现在的规则：用户明确指定的值一个字都不动，直接发往服务商，模型不存在时由服务商的 400 报错揭示合法 ID 列表。同一思路的另一面是"回到默认"也要有正式入口（提交 5bb7bdc7c4、66c48cb158、65effb1e9f）：会话里用 /model 换过模型后，覆盖被持久化，此后配置里的默认模型怎么改都被它遮住，此前唯一的回头路是 /new，而 /new 连对话一起丢。`/model reset` 清掉会话级覆盖、保留历史：解析器把 reset 当独立请求类型，故意不给 default 起别名——MoA（Mixture of Agents，多模型协作）的默认预设名字就叫 default，`/model default` 仍解析到那个预设；真有裸 ID 叫 reset 的模型用 `vendor/reset` 仍能选到（`hermes_cli/model_switch.py:578-582`）。网关侧先把持久化的覆盖加载进内存再清——否则重启后会出现回复说"没有覆盖"、存储在下一条消息时又把它复活（`gateway/slash_commands_model.py:661-663`）；下一回合在用户消息前垫一句"模型已从 X 换回默认 Y"，不碰系统提示词、不破坏角色交替（`gateway/run_turn_runner.py:873-878`）。Ink TUI、桌面端把 /model 作为 `session.mutate` 直接发给会话属主，前两个处理器看不到，reset 一度被当成模型名冻进策略、服务商收到 `model: reset`；现在属主把它当"选择所属 profile 现读的配置模型"，已在默认模型上就返回 noop（`gateway/session_mutation_model.py:187-191`）。
 
 **模型即插件。** 每家服务商是一个插件，住在 `plugins/model-providers/` 下，按统一接口实现。新接一家服务商不碰核心代码。配套还有成本守卫（防止单次任务烧穿额度）和凭据池（多把密钥轮换、按健康度调度）。
 
 MCP 服务器也可以给自己的工具标价（`tools/mcp_tool_costs.py:1-9`）：配置里 `mcp_servers.<name>` 下的 `tool_costs`、`spend_limit`、`cost_unit`（便携包写在 `extensions...servers.<name>.costs`），声明每个工具一次调用要花多少、一个聊天最多花多少。审批提示里写明这次调用的代价和聊天里已累计的总额；一次会越过 `spend_limit` 的调用，即使在 `trust: full`（完全信任）的服务器上也要显式询问，无人值守的场景直接拒绝、不派发。计数按"聊天 × 按档案隔离的服务器键"记，只统计真的派发了的调用，没到服务器的调用会退还；数字是服务器自己声明的估算（区间取上限），不是厂商账单。没声明任何价目的服务器行为完全不变。几个边角都有处理（提交 c7993457bc、ce18aafe01）：压缩或 `/branch` 换了会话 ID 时总额跟着走——继续着的聊天不该重新拿一份额度；同一聊天的花费询问串行执行、每次现读总额，并行的调用能看到前一次批准已记上的数，两条一样的询问也不会合并成一次回答放行多笔；一个进程里每个 cron 运行各有自己的总额（此前共享一份，一个任务花完把下一个也挡住）；总额永不清理——忘了的总额会悄悄把额度续上。
 
-**辅助模型路由。** 很多后台小任务不需要主力模型：起会话标题、压缩上下文、识别图片、生成向量、跑 curator 复盘。这些走 `agent/auxiliary_client.py` 的辅助通道，自动降级链：主力服务商 → OpenRouter → Nous Portal → 自定义端点 → Anthropic 官方 → 放弃。每种后台任务可以在配置里单独指定模型；402（余额不足）错误自动落到链条下一环。
+**辅助模型路由。** 很多后台小任务不需要主力模型：起会话标题、压缩上下文、识别图片、生成向量、跑 curator 复盘。这些走 `agent/auxiliary_client.py` 的辅助通道，自动降级链：主力服务商 → OpenRouter → Nous Portal → 自定义端点 → Anthropic 官方 → 放弃。每种后台任务可以在配置里单独指定模型；402（余额不足）错误自动落到链条下一环。链条第一环"当前回合的主路由"（主力服务商、模型、base_url、api_key）怎么确定，本身就是多路复用的隔离问题：`set_runtime_main()` 早已把它绑在一个 ContextVar（Python 的上下文变量，每个异步任务或线程上下文各持一份值）里，因为多个网关会话重叠时进程级全局变量不安全；但它同时还发布六个进程级镜像变量与一份兼容快照，主线程上、上下文变量未设置时查询会回退去读镜像——发布方逐字段写、读方不加锁，主线程上的查询与另一个会话的 `set_runtime_main` 同时交错时可能读到 A 会话的 base_url 配 B 会话的 api_key（提交说明称调快线程切换间隔后 3 秒内复现数万次，未独立复现）。镜像、快照、锁、发布函数全部删除，查询只读上下文变量（`agent/auxiliary_client.py:2524-2527`、`:2707-2710`，提交 57d491383b、281f3f32e7）：别的线程上做的绑定不会传到这个线程，scoped 绑定在代码块结束后就消失。
 
-**自己搭的模型服务器宕机时，错误是可判定的**（2026-10-31 合并）。本地托管运行时（managed local runtime，Hermes 帮你在本机或桌面端起着的模型服务器）没在服务时，此前掉进通用的连接错误堆里，界面只能说"请求失败"；现在有类型化的 `local_runtime_unavailable` 错误码，带 `retryable` 标记（`hermes_cli/runtime_provider_custom.py:585`）——"配置存在但服务器没起"与"网络不通"从此说两种话。桌面端按 60/120/300 秒的退避间隔重检，服务器一恢复就撤下通知；界面的引导文案直接给出启动办法（桌面应用或 `hermes model`），而不是让用户对着一句报错猜。
+**自己搭的模型服务器宕机时，错误是可判定的**（2026-10-31 合并）。本地托管运行时（managed local runtime，Hermes 帮你在本机或桌面端起着的模型服务器）没在服务时，此前掉进通用的连接错误堆里，界面只能说"请求失败"；现在有类型化的 `local_runtime_unavailable` 错误码，带 `retryable` 标记（`hermes_cli/runtime_provider_custom.py:585`）——"配置存在但服务器没起"与"网络不通"从此说两种话。桌面端按 60/120/300 秒的退避间隔重检，服务器一恢复就撤下通知；界面的引导文案直接给出启动办法（桌面应用或 `hermes model`），而不是让用户对着一句报错猜。熬过重试循环的超时错误也分阶段说话（提交 a8c7ec078d、c41de4d95f）：此前直接冒出 SDK 原文"Request timed out"，既不说连接建没建立、也不说该调哪个设置。现在沿异常的显式 `__cause__` 链找最具体的那个超时——openai SDK 会把连接超时也包成 APITimeoutError——连接阶段提示检查 base_url 与网络路径（`agent/timeout_error_summary.py:56-58`），读取阶段提示调 `providers.<provider>.request_timeout_seconds`；只走 `__cause__` 不走 `__context__`，在 `except ReadTimeout:` 块里抛出的 401 不该被报成超时；两条摘要都保留 "timed out" 字样，cron 失败通知与错误分类器靠它匹配。
 
 **数据用途要求跟着结果走。** 连接器工具的返回结果会带数据用途标记（`tools/connectors/data_use.py:1-5`）：网关在 execute 结果上标 `dataUse.requires`（`no_training` 不得用于训练、`zero_retention` 零留存），Hermes 把它作为工具消息的 `data_use` 元数据存进已有的 display_metadata 列（正文不动，批量取并集，`/branch`、恢复、压缩的拷贝都带着），发给任何模型服务商之前剥掉。只有 Nous 提供方读它：把发出消息的并集算出来，在 chat-completions 和 Anthropic Messages 两条路径上都发 `provider.data_collection=deny`（zero_retention 另加 `zdr`），其他提供方完全看不到这个标记（`plugins/model-providers/nous/__init__.py:34-37`）。服务商用 403 `data_policy_denied` 拒绝时归为独立的不可重试原因、不做降级，提示语告诉用户换端点；对赠送档用户还有一句专门的说明——需要不训练模型的结果会被每个赠送模型拒绝，换模型帮不上忙，得升级、`/compress` 或开新会话（提交 9443a4d82e；Hermes 不知道用户的档位，这句话是条件式的）。要求本身挂在派发结果上而不是进程级全局表（提交 086984caf5）：每次派发绑一个上下文变量收集器，批量调用的条目并进同一个收集器；没有绑收集器的调用方（execute_code RPC、MCP serve）什么都不记录，此前为防无限增长设的 512 条上限整个不需要了。
 
@@ -267,6 +270,7 @@ flowchart TD
 - 每个 profile 独立读自己的配置，第二个机器人不继承第一个的任何设置。曾有一个 PR 想让 profile 从默认 profile 继承配置，被明确拒绝，理由是"隔离就是设计本身"，想从默认配置起步有 `--clone` 参数。
 - `max_turns`（单次任务最多执行几轮）这类一个进程只装得下一个值的设置，必须从各 profile 自己的配置里单独读，否则所有 profile 共享第一个的值。
 - 密钥读取在多路复用激活后"读不到就报错"：宁可失败，也不静默漏到别的 profile。
+- 密钥不跨 profile 复制：`hermes update` 此前给没有 .env 的具名 profile 原样复制一份默认 profile 的 .env——机器人令牌也在里面，而一个令牌不能被两个适配器同时使用，副 profile 的 Telegram/Discord 于是被标成 duplicate_credential 致命错误、桌面端显示 "Backend telegram down"。现在只写占位头，函数说明写明"密钥按 profile 隔离"（`hermes_cli/profiles.py:1481-1484`、`:1492`，提交 890ddad617、f92db3b007）；用户删掉重复令牌后，重建有变动的 profile 前先清掉它已无活跃适配器的平台裁定，不再要等重启（`gateway/run_profile_reconcile.py:276-277`，提交 61ba1f684e）。
 - 生命周期两个坑都有对应处理：profile 改名时，若它正被运行中的多路复用器服务，必须同步取消旧路由（路由表里留着旧名字，消息就会送错或被丢，就像员工改名后工牌没同步就进不了门）；新建 profile 时必须通知运行中的多路复用器重扫，配置文件变了、正在跑的程序并不会自己知道。
 
 多路复用的默认值是开的，但开得克制：网关启动时先跑一遍迁移预检，确认多 profile 合并安全才复用；不安全就照旧单 profile 启动并把原因写进日志；配置里显式写死的值从不二次猜疑。
@@ -283,15 +287,17 @@ flowchart TD
 
 第二道：读哪个档案的配置，以**服务中的档案**为准（`gateway/run_config_loaders.py:112-152`）：回合被路由到哪个 profile，就读那个 profile 的 config.yaml；主 profile 直接用网关自己伺服的那份配置（提交 78aa58f672），顶层平台块与嵌套 platforms 两种写法都读（提交 71981bd1fd）。查找失败不算错误——记一条日志、退回默认回复规则（`:146-151`），一次配置查询失败不该变成一条错误回复。
 
-第三道：沉默要经得起崩溃恢复的对账。恢复流程看到"最后一轮没有回复"时，默认当作异常沉默、补发一条提醒——这是留给人的保底，故意沉默会被误伤。现在保持沉默的决定作为回执写进会话元数据，绑定活跃回合令牌与最后一条助手消息的时间戳（`gateway/run_turn_persistence.py:66-100`），恢复侧凭令牌与时间戳都对得上才认可这次沉默（`gateway/run_startup.py:843-855`）；回执写失败只记日志、线上投递保持沉默（提交 30071865c9）。崩溃在任何一步发生，保底规则原样生效。
+第三道：沉默要经得起崩溃恢复的对账。恢复流程看到"最后一轮没有回复"时，默认当作异常沉默、补发一条提醒——这是留给人的保底，故意沉默会被误伤。现在保持沉默的决定作为回执写进会话元数据，绑定活跃回合令牌与最后一条助手消息的时间戳（`gateway/run_turn_persistence.py:66-100`），恢复侧凭令牌与时间戳都对得上才认可这次沉默（`gateway/run_startup.py:848-856`）；回执写失败只记日志、线上投递保持沉默（提交 30071865c9）。崩溃在任何一步发生，保底规则原样生效。
 
-Telegram 平台侧也补齐了自己的"该不该回"判定（`plugins/platforms/telegram/telegram_context.py:57-81`）：群聊消息首次像 WhatsApp 一样算出 `group_reply_expected`——被 @、被回复、斜杠命令要回；回复的对象是未知作者，或是以聊天身份署名的帖子（关联频道的自动转发、匿名管理员，Telegram 用服务账号填充作者）时返回"不确定"、保留沉默保护（提交 c419cf7c86、61794f3f17、e97cdd16fe）；没有字幕的语音同理——听不出里面有没有在问问题（提交 5bb0e7d87d）。沉默是群聊机器人的礼貌，"该回没回"却是事故：豁免要房间自己开、回合要健康、决定要可对账，三样齐了沉默才站得住。
+Telegram 平台侧也补齐了自己的"该不该回"判定（`plugins/platforms/telegram/telegram_context.py:57-82`）：群聊消息首次像 WhatsApp 一样算出 `group_reply_expected`——被 @、被回复、斜杠命令要回；回复的对象是未知作者，或是以聊天身份署名的帖子（关联频道的自动转发、匿名管理员，Telegram 用服务账号填充作者）时返回"不确定"、保留沉默保护（提交 c419cf7c86、61794f3f17、e97cdd16fe）；没有字幕的语音、音频文件（提交 5bb0e7d87d）与视频圆片（video note，Telegram 的圆形短视频消息，提交 840d104031）同理——话在音频里，"带问号就要回"的规则读不到（`telegram_context.py:80-82`）。沉默是群聊机器人的礼貌，"该回没回"却是事故：豁免要房间自己开、回合要健康、决定要可对账，三样齐了沉默才站得住。
 
 ## 审批与安全
 
 **审批系统。** AI 能执行 shell 命令，就必须有人工刹车。入口在 `tools/approval.py`，由几块拼成：危险命令模式识别；用户拒绝名单（deny 规则，如 `"sudo *"`）；永久放行名单（按 profile 隔离）；人工确认（CLI 里直接问，网关平台上来回等回复）；智能审批层（guardian 模型判断命令意图是否危险）；外加 tirith，一个独立的内容级命令扫描器（外部二进制，默认开启，扫模式匹配抓不到的威胁；扫描器本身不可用时默认放行，避免环境残缺导致整个 agent 瘫痪）。连续 3 次被智能审批拒绝后升级为硬停，防止模型无休止换路子重试。
 
 一个关键的安全细节：全跳过审批的 YOLO 开关在**进程启动时冻结**，不每次运行时读环境变量。因为技能代码跑在同一个进程里，运行时可改的环境变量等于给提示词注入留了一扇门。还有 sudo 的标准输入防线：防止把命令通过 stdin 喂给 sudo 绕过命令行检查。
+
+审批界面还有一条规矩：人批准的必须就是将要运行的（提交 3f5612cde6、f62f42e4cf、33bce7b26d、7c8dd94f1f、a4994d4ead、6513a4f591）。危险命令里可以藏"渲染出来什么也看不见"的内容：零宽字符、双向控制符（bidi override，能让一段文字在屏幕上倒序显示）、U+E0000 标签块、原始 ANSI/OSC 终端转义序列、单独的回车符，或者几百个空格把命令真正的结尾挤出屏幕、挤出聊天卡片的 200 字符预览。`sanitize_command_for_display()` 把这些显式化：Unicode 类别 C*（控制、格式、私用、未分配，Tab 与换行除外）、行/段分隔符、一批会渲染成空白的字形（变体选择符、韩文填充符、盲文空白）变成可见的 `\uXXXX`，同一字符连续 4 个以上折叠成 `⟨\u200b ×N⟩`；行中 21 个以上、行首 65 个以上的连续空白折叠成 `⟨+N whitespace chars⟩`，3 行以上空行折叠成 `⟨+N blank lines⟩`（`agent/redact.py:692-695`、`:731-733`）。所有审批出口统一走 `redact_approval_display()`——先脱敏密钥再做显示处理——CLI 审批提示、网关通知载荷、`execute_code` 的待审正文、ACP 编辑审批标题、MCP 订阅与 vault 付款的同意提示都在内（`tools/approval.py:865-866`）；只改显示副本，实际执行的命令、智能审批模型的判断输入、永久放行名单的键用的都是原文。clarify（澄清提问）用较轻的 `prose=True`：保留 ZWJ、ZWNJ、变体选择符，emoji 与波斯语这类文字需要它们，此前问题里的"⚠️"会显示成 `⚠\ufe0f`（`redact.py:713-716`）；两个原始选项显示成同一个串时追加 ` (2)` 区分，免得用户点了 A、模型收到的是 B（`tools/clarify_tool.py:130-134`）。Ink TUI 的审批面板此前只显示换行后的前 10 行还写着"(full text above)"——第 11 行如果有危险内容，根本没上过屏——现在按 v 翻页并标出当前是第几行到第几行（`ui-tui/src/components/prompts.tsx:31-33`）。批之后也要留得住：Telegram、飞书、Teams 上点了审批按钮，整条消息此前被替换成只剩决定，共享群聊从此丢了"批的到底是什么"；现在 Telegram 用 `Message.text_html` 从消息实体重建原卡片再追加决定，超长时退回只写决定保证按钮失效、网络错误时不退回——那次编辑可能已生效，退回会把保留的正文又覆盖掉（`plugins/platforms/telegram/telegram_resolved_prompt.py:27-31`）；Teams 的按钮数据只带提示 id、完整命令预览留在适配器内存里按 id 存至多 256 条——长 CJK 命令曾让每个按钮带 2000 字符预览、卡片约 30 KB 超过 Teams 约 28 KB 上限而退化成纯文本（`plugins/platforms/teams/adapter.py:694-698`，提交 92c86afb1f、288c0c1cae、44678e5647）。
 
 **URL 安全检查的对手是解析差异。** `is_safe_url` 在浏览器类工具访问一个网址前判断它安不安全，比如拦住对云元数据地址的访问（`169.254.169.254`，云主机内部的一个服务，能从它读到实例凭据）。这条防线的坑不在漏写规则，而在两套解析器对同一个字符串得出不同的主机名：Python 自带的 urllib.parse 与浏览器系的 WHATWG 解析器（Chromium、Node 的 fetch 用的那套）规则不同——WHATWG 在反斜杠处结束主机、对主机做百分号解码、接受 `http:\\host` 这类写法，于是 `http://127.0.0.1:8080\@1.1.1.1` 被判成 1.1.1.1，浏览器实际拨号的却是 127.0.0.1:8080。现在 http(s) 网址带控制字符、主机不以 `//` 引导、主机含反斜杠、带 userinfo（`用户@主机` 里的凭据段）、主机带百分号编码或空白、端口非法的，一律拒绝；绕过 `is_safe_url` 的浏览器后端由 `is_always_blocked_url` 守住元数据地址这条底线（提交 01fbd2663d）。随后三个补丁都是同一主题：找控制字符要看检查者实际读的那个字符串——两端只剥普通空白后找控制字符、主机从同一个串里取，尾部的控制字符不再漏网（提交 55bfc47de1）；比对元数据地址前先把主机做 IDNA 编码（浏览器把国际化域名转成 ASCII 的规则）——全角句号与全角数字经这步映射会变回 ASCII，`http://169.254.169.254。/` 在 Chromium 眼里就是元数据地址，Python 这边的主机名却对不上字面量、比对落空（提交 c5d9f2025e）；元数据底线只拒"能把主机本身挪走"的写法，代码里模板拼端口（`f"http://localhost:{port}/"`）不再被误拦，百分号编码的主机先解码再照常比对（提交 ad55e8a66b）。判定一个网址安不安全，得用对方将要用的那套解析。
 
@@ -323,7 +329,7 @@ flowchart TD
     OUT --> DELIVER["经投递队列送回 Telegram / Discord 等平台<br/>失败有专门的事故记录和重试通道"]
 ```
 
-任务清单存在 `~/.hermes/cron/jobs.json`，每次执行的输出存 `output/{任务ID}/{时间戳}.md`：定义和产物分开，逐次留档可回看。cron 表达式（`0 9 * * *` 这类"每天九点"写法）用标准库 croniter 解析，且**延迟导入**：不用 cron 表达式的会话不付这个加载成本。
+任务清单存在 `~/.hermes/cron/jobs.json`，每次执行的输出存 `output/{任务ID}/{时间戳}.md`：定义和产物分开，逐次留档可回看。cron 表达式（`0 9 * * *` 这类"每天九点"写法）用标准库 croniter 解析，且**延迟导入**：不用 cron 表达式的会话不付这个加载成本。每次触发的提示词还带上实际运行时间（提交 3166c4a4b1）：系统提示词里的时间戳只到日期——逐字节不变才能命中缓存——于是一次 cron 触发不知道自己几点跑的，07:00 的晨报与 19:00 的重试分不出来，对时间敏感的报告要么编一个时间、要么花一次工具调用去跑 `date`。`_build_job_prompt` 在 cron 提示之后紧跟一行 `[CURRENT RUN TIME: <星期, 日期 时:分 时区>]`（`cron/scheduler_prompt.py:294-296`、`:357`）；`_CRON_HINT` 常量本身保持逐字节不变，这一行放在每次运行都会变的那部分里、位于技能块的稳定前缀之后，跨次运行的技能缓存不受影响——又一个"会变的东西不进系统提示词"的例子。
 
 可靠性是三层朴素手段叠出来的。
 
@@ -351,7 +357,7 @@ flowchart TD
 
 **延迟导入的两个用途。** 一类为省启动时间：croniter、桌面端插件 SDK 命名空间，都是用到才导入。另一类为测试可控：`env_loader` 原本在文件顶层导入 dotenv（读 `.env` 的流行库），导致测试没法用假模块替换真模块（打桩：用假实现顶替真依赖来控制行为），因为文件一加载真 dotenv 已经进来了；把导入挪到真正用到的函数里，桩才能顶上去。同一个手段，既是性能优化也是依赖可替换的前提。
 
-**安装器与依赖纪律。** 一条 curl 或 PowerShell 命令装齐 uv、Python 3.11、Node.js、ripgrep、ffmpeg，Windows 上还带一个隔离安装的便携 Git Bash（不碰系统已有的 Git）。依赖管理有一条被事故换来的硬政策：所有依赖必须带版本上界（起因是 litellm 的一次供应链事故和 2026 年 5 月的 Mini Shai-Hulud 蠕虫，恶意版本借着"自动跟新"的宽版本约束扩散），GitHub Actions 引用必须固定到完整 commit SHA，裸 `>=x.y.z` 会被 CI 直接拒绝。
+**安装器与依赖纪律。** 一条 curl 或 PowerShell 命令装齐 uv、Python 3.11、Node.js、ripgrep、ffmpeg，Windows 上还带一个隔离安装的便携 Git Bash（不碰系统已有的 Git）。依赖管理有一条被事故换来的硬政策：所有依赖必须带版本上界（起因是 litellm 的一次供应链事故和 2026 年 5 月的 Mini Shai-Hulud 蠕虫，恶意版本借着"自动跟新"的宽版本约束扩散），GitHub Actions 引用必须固定到完整 commit SHA，裸 `>=x.y.z` 会被 CI 直接拒绝。更新器的暂存范围也变小了（提交 005fbe8058、001b0eba27、c483933325）：`hermes update` 此前对任何有改动的工作树执行 `git stash push --include-untracked`，检出目录里任何未跟踪的文件夹都会被哈希进 git 对象、从磁盘删掉、恢复时再写回——一个 55 GB 的遗留 worktree 副本（280 万个文件）让这一步跑了好几分钟，拒绝恢复时整个文件夹被留在 stash 里。现在只暂存会冲突的未跟踪条目：更新可能落到的 ref（目标、origin/<branch>、本地 <branch>）在同一路径或其父/子路径上有文件时才暂存，比较前统一大小写折叠，其余用 git 的 exclude 路径规约留在磁盘上（`hermes_cli/update_cmd_stash.py:126-131`、`:266-267`）；扫描显式传 `--untracked-files=normal`，不受用户 `status.showUntrackedFiles=no` 影响（`:155`）；fork 仓库或目标树读不到时退回全部暂存。交互终端在暂存之前先问"更新后保留这些改动吗"，答否就删掉本来会被暂存的内容、不留 stash 条目；目标就是 HEAD 或其祖先时不问——此前 HEAD 已在 origin/main 上也会问，答"n"会在一次空更新里删掉改动（`hermes_cli/update_cmd.py:1415-1417`）。
 
 **兼容与迁移。** 对外部插件的向后兼容走一张显式兼容清单（`COMPAT_MANIFEST.json`），仓库自己的代码和测试禁止使用兼容路径，CI 有专项检查。从 OpenClaw 迁移是一等公民：`hermes claw migrate` 自动导入它的人设文件、记忆、技能、审批名单和密钥，支持先预览再执行。
 
@@ -380,7 +386,7 @@ sequenceDiagram
 
 连接器的调用语义：execute 是**每次请求单个调用**——失败状态码的响应体若带着调用错误（错误码 + 错误族），就作为该调用的错误条目交给模型，模型看到的是"TOOL_NOT_ALLOWED"而不是一句"连接器网关请求失败"，能据此自己想办法；重试规则收紧到 502/503/504 重试一次、429 仅当 Retry-After 写明等待不超过 10 秒时重试一次，且沿用同一幂等键（让网关能认出重复提交，不重复执行）；对端还是旧网关时自动回退批量形式并记住它的形态。`CONNECTION_EXPIRED` 与 `CONNECTION_REQUIRED` 一样保留卡片和链接行为，措辞换成重连。每条失败的日志级别是 WARNING，回合与工具调用 ID 逐层传到网关（经同意的操作能说清是哪次调用发起的），文件输入被拒按错误类计数进指标。
 
-**插件钩子长出两个新能力。** 其一，`register_hook(..., hold_stream=True)`（提交 2eec2a7d24、83b4128032）：要改写回复的插件（脱敏、策略过滤这类"必须在用户看到之前过目"的场景）可以声明扣住流式输出，等 `transform_llm_output` 处理完再放行。声明挂在钩子的注册句柄上，注册在声明就在、注销就失效，且只对加载它的那个 profile 的插件管理器生效；普通的 transform 注册保持流式（声明是可选项），把旗子挂到别的钩子上会被忽略并给一条警告。其二，`ctx.side_question`（提交 a8db83446f）：插件可以在一个回合结束后，向会话自己的 agent 追加提问拿答案——插件不用自己养一个模型调用链，问的就是正在服务这个会话的那个 agent。
+**插件钩子长出三个新能力。** 其一，`register_hook(..., hold_stream=True)`（提交 2eec2a7d24、83b4128032）：要改写回复的插件（脱敏、策略过滤这类"必须在用户看到之前过目"的场景）可以声明扣住流式输出，等 `transform_llm_output` 处理完再放行。声明挂在钩子的注册句柄上，注册在声明就在、注销就失效，且只对加载它的那个 profile 的插件管理器生效；普通的 transform 注册保持流式（声明是可选项），把旗子挂到别的钩子上会被忽略并给一条警告。其二，`ctx.side_question`（提交 a8db83446f）：插件可以在一个回合结束后，向会话自己的 agent 追加提问拿答案——插件不用自己养一个模型调用链，问的就是正在服务这个会话的那个 agent。其三，`pre_llm_call` 可以否决一个回合（提交 ad9229c843、792330dc91、c0bcfe2bb2、4061818385，issue 57364）：数据防泄漏、隐私、合规这类插件需要在"这句话发给模型之前"把它拦下，此前这个钩子只能往用户消息里追加上下文。任何回调返回 `{"action": "block", "message": ...}` 就算否决，多个回调都否决时第一个有效的生效、没带 message 的被忽略（`agent/turn_context.py:1233-1238`）；被否决的回合不进生成循环，block 消息直接成为本回合的助手回复，转录里仍是一对正常的 user→assistant，`turn_exit_reason` 记 `blocked_by_plugin_pre_llm_call`、模型请求次数为零（`agent/conversation_loop.py:1616-1618`）。"被拦的话不离开本机"要按"谁会读这一行"逐个检查：不起会话标题（起标题本身也是一次模型调用）、不做外部记忆的预取与同步、不触发后台复盘、不做回合开始时的压缩——钩子为此挪到压缩之前，因为压缩摘要会引用最近的用户消息——也不做回合结束后的 micro 压缩（`agent/turn_finalizer.py:732-733`）。存储方式返工过一次：第一版只把占位文本写进 `api_content`，而这个字段只有主循环重放时才读，压缩、`session_search`、外部记忆提供者、复盘摘要读的都是 `content`，被拦的原话会在下一次压缩或搜索时到达模型；现在这一行的 `content` 就是占位文本 `[Message withheld: a pre_llm_call policy hook blocked it.]`，原话只存进 `display_metadata.withheld_prompt` 供界面显示，交给记忆提供者的整行数据先去掉这个键（`agent/turn_context.py:834-836`、`agent/message_metadata.py:81`）；`/retry` 与 `/undo` 先把占位换回原话再动作。失败时放行：回调抛异常或超过 `plugins.hook_callback_timeout`（默认 30 秒）只记日志然后跳过、回合照常——与 `pre_tool_call` 的超时即拦截正好相反（`agent/shell_hooks.py:44` 的 `_BLOCKING_EVENTS` 只含 pre_tool_call），文档要求策略类钩子自己捕获错误、判断不了就返回 block。
 
 ## 设计原则
 
@@ -451,3 +457,4 @@ sequenceDiagram
 - 2026-10-30 结构重构：按端到端讲解的标准改写正文——新增缓存命中成本图、学习循环四层流程图、会话搜索写入与读取双流程图、多路复用隔离图、cron 到点执行流程图、插件凭据代发时序图；正文两处商业腔用词随改（保底、守住），缓存成本表述从价格比喻改为直说，仓库地图节的配置接入口与缓存判据两段改为小节；术语与引用保持原状，不引入新事实。
 - 2026-10-31 基于 commit 6bb377a51d 补充：导入配置模块零副作用（OPTIONAL_ENV_VARS 首读补算不持锁、PROVIDER_REGISTRY 首读前同步、PEP 562 延迟；远端后端凭据解析出抓取锁且锁内不打日志、日志脱敏只读内存策略表、bundled_profiles 不读配置不跑插件发现、安全 worker 返回空目录）；cron 到点次补跑的优先级链（任务 catch_up 声明压过 grace_minutes、one-shot 固定 120 秒宽限、全局 cron.catch_up_missed 垫底）与运行中到点次的取消协议（按执行 ID 写标记文件、原子且幂等、cancelled 为终态、执行记录各读取方不重放不重复登记）；本地模型服务器宕机类型化（local_runtime_unavailable 带 retryable、桌面端 60/120/300 秒退避重检恢复即撤通知）。另记小项：clarify_batch 能力协商一张表单、Enter 全部答完才发；浏览器通知三层（标题闪烁、favicon 徽标、系统通知）；无人查看会话的空闲检查先解析目标再开读、不嵌套读上下文（session_viewer_close.py:239-250）；键位按窗口类型解析。
 - 2026-11-01 基于 commit c419cf7c86 补充：群聊沉默豁免组（房间 channel_overrides.allow_silence opt-in、豁免要求回合结果健康——failed/partial/interrupted/error 全假且 completed 非 False；按服务中的档案解析配置、顶层平台块两种写法都读、查找失败退回默认规则；沉默决定作回执绑定活跃回合令牌与消息时间戳供崩溃恢复对账、写失败线上保持沉默；Telegram 首次算 group_reply_expected 对齐 WhatsApp 规则，频道帖/未知作者/无字幕语音保留保护）；原始 CDP 工具接上私网防线（每条调用过 _browser_cdp_private_guard、不发起抓取的方法豁免、URL 字面量识别支持协议相对写法与 userinfo 后主机）；事件循环治理续篇（owner 作用域构建挪工作线程、桌面 WebSocket 回环无公共门时关每帧压缩、控制卡重发布的快照读取挪工作线程）。另记小项：桌面插件名路径穿越加固群（_checked_name 拒冒号/Windows 设备名/尾点、materialize 前逐半检查目录树并拒链接、Desktop/ 大小写拼写可发布，792ebd2df4、3b3706a270、aa2f4af3c6、df98f3d8b0）；密钥缓存与 Photon 令牌上移到 profile home 顶层、旧存储副本删除（hermes_cli/home_data_layout.py，2bed5b2258、f413c2ee9a）；Windows 检出锁检测不再每次泄漏一个 ctypes 类型（d21408ec66）；skills 环境两处并发修复（不删别的 agent 刚发布的好环境 a53acf8d3a、OCR 副环境在下次终端调用保持选中 b544b82db1）；Bot Chat 历史所有权三连（首次投递保留属主历史、按投递主体判定、按压缩后末条判定移位，1a08f050cc、075618f4a2、c841bfcd0a）；终端容器键拆分（无会话 worker 复用档案容器 149e3f5539、具名档案的未命名聊天也按档案名键入 e10765f7c3）；副档案 Webapp 标签页保活 scale-to-zero 实例（c2f14e48b8）；git 安装的 root-layout 插件不计 .git 进 64 MB 上限（2c9946a6c5）；SKILL.md 描述与真实交互对齐（f282c57b78）；docker fail-closed 守卫测试加固（全部 exec 卡住不再算通过、须观察到真实拒绝，34411c1a68、0c181d3782）。
+- 2026-11-02 基于 commit 9a56be3d86 补充：pre_llm_call 钩子可否决回合（第一个有效否决生效、回合零模型调用直接以 block 文本收尾、不起标题不预取记忆不触发复盘、钩子挪到回合压缩之前、content 存占位文本而原话进 display_metadata.withheld_prompt——此前占位只写 api_content 会被压缩与搜索送到模型、/retry 与 /undo 先还原、异常与超时放行与 pre_tool_call 的即拦相反，ad9229c843、792330dc91、c0bcfe2bb2、4061818385，issue 57364）；审批显示防线（零宽字符/双向控制符/U+E0000/ANSI 序列/大量空白显式化成转义与折叠标记、所有审批出口统一 redact_approval_display 只改显示副本、clarify 用较轻的 prose 模式且重名选项加 (2) 区分、Ink TUI 长命令按 v 翻页，3f5612cde6 等）；审批卡片做出决定后保留完整请求（Telegram 重建 text_html 卡片、Teams 预览留在适配器内存按 id 存至多 256 条防 28 KB 上限、飞书状态存正文，92c86afb1f、288c0c1cae、631b00c3f6）；流式响应总时长上限 agent.stream_max_lifetime（默认关、来块不重置、下限取卡流超时、不进熔断计数、同一次尝试被切 3 次弃工作线程、只覆盖 Chat Completions 与 Anthropic Messages，ac8037c05b 等）；后台完成通知只折叠队尾合成一个回合（写入时事务内再确认仍是队尾、自己的心跳不算队尾、被取消行只留自己身份防 N²/2 膨胀，343a5f7f58、3030077ef0、33920f4b2f）；复盘提示词加"只存有据可查的事实"规则（不推断特质、不升格一次性请求、例外是明示通用与长期喜恶、两个记忆提示词共用而技能复盘不加，4a8cc6f705、b47fe6ecc6）；/model reset 清会话级覆盖保留历史（reset 不给 default 起别名防撞 MoA 预设、先加载再清、属主路径现读配置已是默认即 noop，5bb7bdc7c4、66c48cb158、65effb1e9f）；hermes update 不再把默认 profile 的 .env 复制进具名 profile（只写占位头防 duplicate_credential、重扫前清过期平台裁定，890ddad617、f92db3b007、61ba1f684e）；update 只暂存会冲突的未跟踪条目并在暂存前先问（路径含父/子前缀判定加大小写折叠、fork 退回全量、无更新不问，005fbe8058、001b0eba27、c483933325）；cron 提示词带 [CURRENT RUN TIME]（_CRON_HINT 逐字节不变、运行时间放每次可变段，3166c4a4b1）；超时错误摘要分阶段（沿 __cause__ 链找最具体超时、只走 __cause__ 不走 __context__、保留 timed out 字样供分类器，a8c7ec078d、c41de4d95f）；辅助通道主路由只读 ContextVar（删六个进程级镜像变量消除跨会话串读 base_url/api_key，57d491383b、281f3f32e7）；Telegram 视频圆片进 agent、无字幕圆片与语音/音频同列"不确定"（840d104031）。既有表述随改：agent.max_turns 默认不设上限而非 500（c32119b12c 已改）；Python 文件数约 1.06 万而非 6900、hermes_state_*.py 62 个而非 30；run_startup.py 引用 843-855→848-856、redact.py 138-160→139-159、telegram_context.py 57-81→57-82。另记未入正文的小项：桌面插件 Windows junction 也算链接（_is_link = is_symlink or is_junction，此前 Path.is_symlink 漏 junction，c1bf0fdba0、016b76da3a）；Electron 侧 git 安装插件开始校验文件夹名（拒路径分隔符/冒号/首尾点/控制字符/设备名，名字叫 .. 的包曾能在 force 安装时删掉整个 Hermes home，00953653cf）；Windows 进程探针 ctypes 绑定 @cache 只建一次（8fc50f0551、9ffd7da595）；扫描中发现进程已被回收按已退出判（c6d6538c51）；遥测新增 busy_arrival 按去向计数（6f55623cc9、a41d1dfca0）；kanban 依赖阻塞钩子改到提交之后派发（d4283a9c9c）；Slack 线程上下文带表情回应（3a73078f3a）；middleware 拿到 Relay 改写前的快照（78f7db6349）；Photon iMessage 以 opt-in 为准（5d9b27cd23 等）；桌面 live-work roster、多网关常驻连接等（e032b8a264、13bd44e4a4）。
