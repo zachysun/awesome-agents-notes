@@ -87,7 +87,7 @@ flowchart TD
 
 ## Agent Loop
 
-主循环在 `src/headless.ts:2153` 的 `while (true)`：检查中断与轮数上限 → 组装输入 → `sendMessageStream` 发给后端 → 消费流式事件 → 按 `stop_reason` 分支。终止原因收敛为几种：`end_turn`（正常结束）、`cancelled`（用户中断）、`requires_approval`（等用户批准工具）、`llm_api_error`（指数退避重试）、`max_steps`（CLI 的 `--max-turns` 上限，`headless.ts:2114-2132`）。
+主循环在 `src/headless.ts:2153` 的 `while (true)`：检查中断与轮数上限 → 组装输入 → `sendMessageStream` 发给后端 → 逐条处理后端返回的流式事件 → 按 `stop_reason` 分支。终止原因收敛为几种：`end_turn`（正常结束）、`cancelled`（用户中断）、`requires_approval`（等用户批准工具）、`llm_api_error`（指数退避重试）、`max_steps`（CLI 的 `--max-turns` 上限，`headless.ts:2114-2132`）。
 
 多步循环由"工具结果即下一轮输入"驱动：后端发来工具调用请求，客户端在本机执行工具（`executeApprovalBatch`，`headless.ts:2605-2624`），把结果包进下一轮输入后 `continue` 回循环顶部（`:2635-2639`）。本地后端的单步执行由 `ProviderTurnExecutor` 包装 pi-ai 的流式适配完成（`src/backend/local/local-executor-factory.ts:42-74`），适配器内部还有一层循环处理上下文压缩预检和溢出重试（`src/backend/dev/pi-stream-adapter.ts:814-864`）。
 
