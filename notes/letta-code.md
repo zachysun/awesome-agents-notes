@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `91897d5`（2026-10-31，v0.34.36） |
+| 笔记基准 | commit `e621a31`（2026-11-01，v0.34.36） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `91897d5`（2026-10-31）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `e621a31`（2026-11-01）。
 
 ## 它要解决什么问题
 
@@ -107,7 +107,7 @@ flowchart TD
 
 - **工具**：`defineTool({schema, description, impl})` 定义（`src/tools/define-tool.ts:24-36`）；`TOOLSET_CATALOG` 提供整套预设：`letta`（含 Memory/Task/Skill 等统一工具集）、`default`（Claude 风格）、`codex` 等（`src/tools/toolset-catalog.ts:19-87`）——一个 CLI 可以按预设切换成不同编码 agent 的工具行为。
 - **MCP**：官方 SDK，stdio/HTTP/SSE 三种传输加 OAuth（`src/mcp-client.ts:1-34`）。
-- **subagent**：内置 general-purpose / recall / reflection / fork / init 五种（`src/agent/subagents/builtin/`），agent 可调其他 agent 为 subagent。
+- **subagent**：内置 general-purpose / recall / reflection / fork / init 五种（`src/agent/subagents/builtin/`），agent 可调其他 agent 为 subagent。Task 工具还能把外部编码 agent 当作 worker 启动，类型限定 `claude-code` 和 `codex` 两种（`src/tools/impl/task.ts:654-669`），分别经流式会话（`src/tools/impl/claude-stream-session.ts`）和 app-server 协议（`src/tools/impl/codex-app-server.ts`）驱动，可以跑在本机，也可以跑在远程 worker 上；远程 worker 永远不能接管父 agent 的 harness（`src/tools/impl/external-coding-agent-task.ts:41-42`）。外部 worker 的每段回复文本被记成进度条目——每条截到 300 字符、每个 subagent 只留最近 20 条（`src/agent/subagent-state.ts:35-37,398`）——写进任务输出文件并随快照发给另一台机器上的父 agent，父 agent 不必等 worker 跑完才知道它在干什么。
 - **hooks 与 mods**：脚本挂钩执行关键点；mods 改 harness 本身。
 
 ## 可观测性
@@ -136,3 +136,4 @@ flowchart TD
 - 2026-10-30 初版：基于 commit `ebc496e` 完整成文。覆盖 MemFS 记忆模型与四层分层、git 编译式上下文构造、钩子化的写入纪律、reflection worktree 流程、双后端能力位与本地无数据库持久化；说明 letta-ai/letta 已归档、本文以 letta-code 为准。
 - 2026-10-31 基于 commit `e2b62e2` 补充：本地后端压缩新增"不可约"保底——完整压缩仍装不下时按轮从最旧侧丢弃历史、保留最近一轮用户消息，警告替代摘要写入（PR 5133，compaction.ts）。
 - 2026-11-01 基于 commit `91897d5` 补充：记忆同步状态改为只进宿主诊断通道（调试日志与警告），不再注入模型上下文，同步与修复由 harness 托管（PR 5398，memory-git-sync.ts）；相应改写"记忆的读取与写入"节。
+- 2026-11-02 基于 commit `e621a31` 补充：Task 工具可把 claude-code / codex 作为外部 worker 启动（本机或远程，远程不接管父 harness），worker 回复文本记为进度条目流式写进任务输出文件并随快照发给父 agent（PR 5437 及同批 subagent 修复，task.ts、subagent-state.ts）。
