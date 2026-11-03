@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `a619e27`（2026-10-29） |
+| 笔记基准 | commit `16ed414`（2026-11-02） |
 
 Supermemory 自我定位是"State-of-the-art memory and context engine for AI"（`README.md:10`），GitHub star 约 3.1 万，在记忆类项目里排前四。它卖两件事：记忆（从用户数据里形成可复用的用户画像和事实）和上下文（把相关内容压缩后注入模型上下文），README 里给出的指标是 "95% Recall@15 with a 99.4% context reduction"（`README.md:32-33`）。
 
 读这份笔记前必须知道一个事实：**记忆引擎本体不在这个仓库里**。官方自托管文档写明："The SDKs and other components in the public repository are open source; the downloadable self-hosted server binary is built from a separate, non-public codebase"（`apps/docs/self-hosting/overview.mdx:20`）。仓库里开源的是三样东西：MCP 服务端全套源码（`apps/mcp`）、面向各 AI 框架的接入胶水（`packages/tools`）、引擎数据模型的类型镜像（`packages/validation`），外加一套非常细致的官方文档（`apps/docs`）。这决定了这篇笔记的读法：它一半讲代码，一半讲"从接口契约和数据模型反推引擎的设计判断"，每个论断会注明证据来自代码还是文档。
 
-这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `a619e27`（2026-10-29）。
+这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `16ed414`（2026-11-02）。
 
 ## 它要解决什么问题
 
@@ -32,7 +32,7 @@ Bun + Turbo 管理的 monorepo（`package.json:16` 用 Bun，不用 npm/pnpm）�
 
 一次 `add` 请求进来，引擎按状态机推进（状态定义在代码里，`packages/validation/schemas.ts:26-36`）：`queued → extracting → chunking → embedding → indexing → done`（或 `failed`），每一步的起止和错误都有记录（`ProcessingStepSchema`，`schemas.ts:38-47`）。到 `done` 为止是第一阶段：内容完成切块和索引，用 `searchMode: "chunks"` 已经能查到原文（文档证据，`apps/docs/concepts/how-it-works.mdx:93-101`）。
 
-第二阶段 dreaming 在文档 done 之后异步进行（文档证据，`how-it-works.mdx:115-126`）：引擎把相关内容分批聚合成"连贯单元"，喂给记忆模型提炼事实、更新用户画像、建图谱关系。两种模式：`dynamic`（默认，跨文档聚合，质量高但慢——新建的 namespace 可能几分钟内查不到任何记忆）和 `instant`（单文档立即提取，快但每文档多计一次操作费，`apps/docs/ingestion/add-memories.mdx:285-292`）。状态机对应多一个 `dreamingStatus` 字段（`apps/mcp/src/server/client/index.ts:38`）。
+第二阶段 dreaming 在文档 done 之后异步进行（文档证据，`how-it-works.mdx:115-126`）：引擎把相关内容分批聚合成"连贯单元"，喂给记忆模型提炼事实、更新用户画像、建图谱关系。两种模式：`dynamic`（默认，跨文档聚合，质量高但慢——新建的 namespace 可能几分钟内查不到任何记忆）和 `instant`（单文档立即提取，快但每文档多计一次操作费，`apps/docs/ingestion/add-memories.mdx:285-292`）。状态机对应多一个 `dreamingStatus` 字段（`apps/mcp/src/server/client/index.ts:47`）。
 
 这个"两阶段"判断的工程含义值得展开：记忆形成需要跨文档视野，这是它无法做进同步请求里的根本原因（单文档的孤立提取产出的就是碎片）。代价是写入方要管理两个状态、轮询两次；supermemory 把这个复杂度显式暴露给调用方，而不是假装一次 add 全部完成。
 
@@ -51,6 +51,8 @@ Bun + Turbo 管理的 monorepo（`package.json:16` 用 Bun，不用 npm/pnpm）�
 
 检索 API：`POST /ns/{namespace}/search`（文档证据，`apps/docs/recall/search.mdx:57-61`）。关键参数：`searchMode` 默认 `hybrid`（记忆和原文块一起搜，可选只搜其一）；`threshold` 默认 0.3；`rerank` 支持 `order`（重排序，约加 100ms）和 `aggregate`（文档证据，`search.mdx:103-122,176-193`）；`rewriteQuery` 自动多路改写查询再合并；`filter` 是可嵌套到 5 层的元数据表达式（`:150-171`）；`include.forgotten` 可以把已遗忘的记忆显式召回（`:203`）。返回项带 `memory` 或 `chunk` 字段区分命中来源，图谱关系（parents/children/siblings）通过 `include.related` 带出。
 
+图谱的完整视图另有专门的读取通道：MCP 的 fetch-graph-data 工具从 `/ns/{namespace}/graph` 拉取整个 namespace 的节点和边——节点分 document、memory 两类，`source` 边从文档指向由它派生的记忆，其余边是记忆关系；工具内部把节点边折叠回"文档带嵌套记忆"的形状再返回（`apps/mcp/src/server/client/index.ts:177`）。这条路由是 v5 尚未写进 SDK 的隐藏接口（注释原话 "The namespace graph feed is a hidden v5 route, so it isn't in the SDK"，`index.ts:380`），分页用 cursor 而不是页码（`index.ts:381`）。memory 节点上原样带着版本链与遗忘字段（version/parentMemoryId/rootMemoryId/isForgotten 等），数据模型一节描述的 schema 在图接口上得到印证。
+
 开源代码里最有学习价值的是 `packages/tools` 的 `withSupermemory` 中间件——"带记忆的对话"完整流程，六步：
 
 ```mermaid
@@ -62,7 +64,7 @@ flowchart TD
     E --> F["响应后：整轮对话格式化<br/>用同一个 id 回写成文档<br/>（同 id = 同文档，dreaming 固定 instant）"]
 ```
 
-几个细节的用意：画像（profile）和检索并行，因为画像不依赖查询——"用户叫我什么名字"这种与查询语义无关的事实必须常驻上下文，不能指望检索命中（文档证据，`apps/docs/concepts/user-profiles.mdx:47-67`）；画像分 static（长期稳定）/dynamic（近期状态）两层，另有按主题的 buckets 第三轴（`:75-113`），两个维度独立演进；注入的内容放进固定标签并整体替换旧块，多轮对话不会重复堆叠记忆块（`packages/tools/src/shared/memory-context.ts:1-41`）；回写固定用 `dreaming: "instant"` 且重试次数显式设为 0（注释原话："Retrying a committed mutation can turn its success into a misleading not-found result"，`apps/mcp/src/server/client/index.ts:221-231`）——对话回写失败不重试，宁可丢一轮对话也不冒重复写入的风险。检索在关键路径上也不重试（`packages/tools/src/shared/memory-client.ts:39-43`），带超时中止。
+几个细节的用意：画像（profile）和检索并行，因为画像不依赖查询——"用户叫我什么名字"这种与查询语义无关的事实必须常驻上下文，不能指望检索命中（文档证据，`apps/docs/concepts/user-profiles.mdx:47-67`）；画像分 static（长期稳定）/dynamic（近期状态）两层，另有按主题的 buckets 第三轴（`:75-113`），两个维度独立演进；注入的内容放进固定标签并整体替换旧块，多轮对话不会重复堆叠记忆块（`packages/tools/src/shared/memory-context.ts:1-41`）；回写固定用 `dreaming: "instant"` 且重试次数显式设为 0（注释原话："Retrying a committed mutation can turn its success into a misleading not-found result"，`apps/mcp/src/server/client/index.ts:283-293`）——对话回写失败不重试，宁可丢一轮对话也不冒重复写入的风险。检索在关键路径上也不重试（`packages/tools/src/shared/memory-client.ts:39-43`），带超时中止。
 
 中间件有三种模式：`profile`（只注入画像，最省）、`query`（画像加按查询检索）、`full`（文档证据，`packages/tools/src/vercel/middleware.ts:203-208`），按对话轮缓存避免工具调用轮重复检索（`middleware.ts:296-336`）。
 
@@ -116,3 +118,4 @@ flowchart TD
 ## 修订记录
 
 - 2026-10-30 初版：基于 commit `a619e27` 完整成文。覆盖两阶段写入（索引先行、dreaming 异步成忆）、记忆版本链与关系边、withSupermemory 注入流程、namespace 物理隔离与遗忘契约；明确标注引擎本体闭源、各论断的证据来源（代码或文档）。
+- 2026-11-03 基于 commit `16ed414` 补充：MCP 的图谱读取切到 v5 namespace graph feed——fetch-graph-data 从 `/ns/{namespace}/graph` 读 document/memory 节点与 source/关系边（隐藏路由、cursor 分页，PR 1871），补入"检索与注入"节；同步修正两处因代码移动偏移的引用行号。
