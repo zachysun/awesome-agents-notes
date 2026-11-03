@@ -1,6 +1,6 @@
 # awesome-agents-notes
 
-## Agent 框架与工具
+## Harness agent
 
 | 项目 | 源仓库 | 笔记 |
 |---|---|---|
