@@ -6,7 +6,7 @@
 | 主语言 | TypeScript（GUI 操控与本机历史采集另有 Swift/Go/PowerShell 原生辅助程序） |
 | 笔记基准 | commit `265f6d7`（2026-11-02） |
 
-Memmy 是 MemTensor（MemOS 的开发团队，本笔记另有 MemOS 专篇）出品的"个人记忆基础设施"，GitHub star 约 2200。它由三块组成：一个跑在本机的记忆服务（默认 `127.0.0.1:18960`）、一套从各家 AI 编码 agent 本地数据里读取工作历史的适配器、以及一个自带的 agent 运行时。三种使用形态：桌面端应用（Electron）、`memmy` 命令行加终端界面（TUI，基于 Ink，一个用 React 写终端界面的库）、独立编译的 `memmy-memory` 记忆服务命令行。端口规划：记忆服务 18960、网关健康检查 18970、WebUI 18980、OpenAI 兼容 API 18990（`docs/cn/reference/ports.mdx:8-15`）。
+Memmy 是 MemTensor（MemOS 的开发团队，本笔记另有 MemOS 专篇）出品的"个人记忆基础设施"，GitHub star 约 2200。它由三块组成：一个跑在本机的记忆服务（默认 `127.0.0.1:18960`）、一套从各家 AI 编码 agent 本地数据里读取工作历史的适配器、以及一个自带的 agent 运行时。三种使用形态：桌面端应用（Electron，用网页技术打包桌面应用的框架）、`memmy` 命令行加终端界面（TUI，基于 Ink，一个用 React 写终端界面的库）、独立编译的 `memmy-memory` 记忆服务命令行。端口规划：记忆服务 18960、网关健康检查 18970、WebUI 18980、OpenAI 兼容 API 18990（`docs/cn/reference/ports.mdx:8-15`）。
 
 这个项目和本笔记系列其他记忆篇的根本差异在接入方式上。mem0、cognee、graphiti 是给应用调用的库，supermemory 靠 SDK 和中间件接入，MemOS 靠插件接入——它们都要求"应用一侧发生点什么"。Memmy 的做法是绕开应用：Claude Code、Codex、Cursor 这些工具本来就把完整会话写在本地磁盘（JSONL 文件或 SQLite 数据库），Memmy 直接读这些文件收割历史，不需要任何一个工具做改造；它自带的适配器覆盖 deepseek-harness、openclaw、hermes、opencode、pi、codex、claude code 等——其中五个在本系列已有专篇。读懂"怎么从别人的本地数据里可靠地收割记忆"是读这份笔记的主线。
 
@@ -23,7 +23,7 @@ Memmy 的观察是：这些工具各自都会把会话历史完整持久化在�
 - `AgentSourceCore/`——采集层的纯解析库：七个工具适配器（claude-code、codex、cursor、opencode、openclaw、hermes、deepseek）、统一的 `SourceTurn` 轮次结构（见主轴节）、脱敏器（`secret-redactor.ts`）、token 预算计算。不依赖运行时，hook 和离线扫描共用同一套解析代码。
 - `Memory/`——记忆服务本体：`storage/`（SQLite 存储与 schema）、`algorithm/`（检索算法）、`service/`（写入、检索、演化服务）、`server/`（HTTP 服务与鉴权）、`cli/`（`memmy-memory` 命令行）、`model/`（嵌入模型）。
 - `Knowledge/`——与 Memory 平行的云端文档知识库客户端，带独立的召回注入器（RAG，检索增强生成——先检索资料再拼进提示词的通用做法）；与个人记忆层零耦合，注入用 `<memmy_knowledge_context>` 标签（`Knowledge/src/recall.ts:15` 注释 "Independent recall integration. No Memory imports"）。
-- `App/`——桌面端：`frontend/`（React 19 + Vite）、`backend/`（内嵌的本地 Fastify 服务，管桌面应用状态、权限、云账号）、`shell/`（Electron 壳，编排 backend 和 agent 网关子进程）、`native-computer-history/`（本机使用历史采集，Swift/Go/PowerShell）、`native-computer-use/`（GUI 操控，以 MCP 服务形式暴露）。
+- `App/`——桌面端：`frontend/`（React 19 + Vite）、`backend/`（内嵌的本地 Fastify 服务——Fastify 是 Node.js 的一个 Web 服务框架——管桌面应用状态、权限、云账号）、`shell/`（Electron 壳，编排 backend 和 agent 网关子进程）、`native-computer-history/`（本机使用历史采集，Swift/Go/PowerShell）、`native-computer-use/`（GUI 操控，以 MCP 服务形式暴露）。
 - `App/memmy-agent/`——agent 运行时与 `memmy` CLI：provider 注册表、ReAct 循环、27 个内置工具、TUI、OpenAI 兼容 API。
 - `Migrations/`——桌面端运行时配置、工作区、应用数据库的版本化迁移；注意记忆库自己的表结构迁移不在这里，内嵌在 `Memory/src/storage/schema.ts`。
 
@@ -51,9 +51,9 @@ Memmy 的写入设计要同时回答两个问题：从哪收，以及怎么保�
 
 ## 模型接入
 
-agent 侧的 provider 注册表（`App/memmy-agent/src/providers/registry.ts:139-470`）覆盖四类：OpenAI 兼容端点数十家（DeepSeek、Gemini、智谱、DashScope、Kimi、MiniMax、OpenRouter、vLLM、Ollama、LM Studio 等）、原生 Anthropic/Azure/Bedrock、OAuth 类（OpenAI Codex、GitHub Copilot）、官方托管 `memmy_account`（注册赠送的体验 Token 走这个）。配置在 `~/.memmy/config.yaml`，API key 支持 `${ENV_NAME}` 引用，明文不落配置文件。无密钥时用托管模式，额度用尽切 BYOK（Bring Your Own Key，自带 API 密钥）。
+agent 侧的 provider 注册表（`App/memmy-agent/src/providers/registry.ts:139-470`）覆盖四类：OpenAI 兼容端点数十家（DeepSeek、Gemini、智谱、DashScope、Kimi、MiniMax、OpenRouter、vLLM、Ollama、LM Studio 等）、原生 Anthropic/Azure/Bedrock、OAuth（开放授权协议）类（OpenAI Codex、GitHub Copilot）、官方托管 `memmy_account`（注册赠送的体验 Token 走这个）。配置在 `~/.memmy/config.yaml`，API key 支持 `${ENV_NAME}` 引用，明文不落配置文件。无密钥时用托管模式，额度用尽切 BYOK（Bring Your Own Key，自带 API 密钥）。
 
-记忆服务侧有三个独立的 LLM 角色（`Memory/src/config/index.ts:281-302`）：summary（记忆摘要，默认 512 token 上限）、evolution（记忆演化，见"更新与遗忘"节）、embedding。嵌入默认跑本地模型 `Xenova/all-MiniLM-L6-v2`（`Memory/src/model/embedder.ts:56`），用 transformers.js 在 CPU 上以 q8 量化执行（`Memory/src/model/embedder.ts:371-404`）——开箱不联网、不花钱，代价是中文效果弱于商用嵌入模型；也可配 OpenAI 兼容/Gemini/Cohere/Voyage/Mistral 任一云端嵌入。
+记忆服务侧有三个独立的 LLM（Large Language Model，大语言模型）角色（`Memory/src/config/index.ts:281-302`）：summary（记忆摘要，默认 512 token 上限）、evolution（记忆演化，见"更新与遗忘"节）、embedding。嵌入默认跑本地模型 `Xenova/all-MiniLM-L6-v2`（`Memory/src/model/embedder.ts:56`），用 transformers.js 在 CPU 上以 q8 量化执行（`Memory/src/model/embedder.ts:371-404`）——开箱不联网、不花钱，代价是中文效果弱于商用嵌入模型；也可配 OpenAI 兼容/Gemini/Cohere/Voyage/Mistral 任一云端嵌入。
 
 BYOK 记忆加工的模型用量有配额闸门：按百万 token 计，默认日限 10M、总限 500M（`Memory/src/config/index.ts:373-376`），超限后暂停记忆演化类后台任务、检索不受影响（`AgentSourceCore/src/memory-token-budget.ts:152-170`）。
 
@@ -73,11 +73,11 @@ BYOK 记忆加工的模型用量有配额闸门：按百万 token 计，默认�
 
 一条记忆是 `memories` 表的一行（`schema.ts:25-48`）：类型（LongTermMemory 等）、状态（activated/resolving/archived/deleted）、层级 `memory_layer`（L1/L2/L3/Skill 四层，`Memory/src/contracts/memory-runtime.ts:25-36`）、`memory_key`/`memory_value`、tags/info/properties 三个 JSON 字段、`content_hash`、版本号、软删除时间。用户偏好单独有 `user_memories` 表带 FTS5 全文索引（SQLite 内置的全文检索扩展，`schema.ts:82-113`）。向量不内联在记忆行里，而是按维度分表：`memory_vec_{维度}` 的 vec0 虚表（`Memory/src/storage/sqlite-vec-store.ts:251-260`）——不同嵌入模型维度不同，换模型不用迁移旧表。
 
-四层各有分工：L1 是收割来的原始轮次 trace；L2 是从 L1 归纳出的策略候选（有 30 天 TTL 的候选池表）；L3 是跨会话的"世界模型"（对用户和项目的长期理解，独立成组表）；Skill 层存从各工具 home 目录顺带收割的技能文档（扫描时顺带读各 agent 的 `skills/**/SKILL.md`，按内容哈希幂等入库，`Memory/src/agent-source/runtime.ts:1190-1307`）。这条"原始层 → 归纳层 → 抽象层"的演化链由后台任务驱动（episode 合并、奖励回传、策略归纳、世界模型抽象），是整个服务里最重的一套机制。
+四层各有分工：L1 是收割来的原始轮次 trace；L2 是从 L1 归纳出的策略候选（有 30 天 TTL（time-to-live，到期作废）的候选池表）；L3 是跨会话的"世界模型"（对用户和项目的长期理解，独立成组表）；Skill 层存从各工具 home 目录顺带收割的技能文档（扫描时顺带读各 agent 的 `skills/**/SKILL.md`，按内容哈希幂等入库，`Memory/src/agent-source/runtime.ts:1190-1307`）。这条"原始层 → 归纳层 → 抽象层"的演化链由后台任务驱动（episode 合并、奖励回传、策略归纳、世界模型抽象），是整个服务里最重的一套机制。
 
 ## 记忆检索与注入
 
-检索是一条可降级的多通道管道。入口 `POST /api/v1/memory/search`（`Memory/src/server/http.ts:80`），候选生成四路并行：向量（sqlite-vec 的 KNN，先按过滤条件圈 2000 条候选窗）、FTS5 全文、LIKE 模式、结构化片段（`Memory/src/service/retrieval/indexed-candidate-pool.ts:99-132`）。合并用 RRF（Reciprocal Rank Fusion，倒数排名融合——多路检索结果按"排名的倒数"加权相加的合并算法）：每条候选 `relevance += 0.4 * rrf`（`Memory/src/algorithm/plugin-algorithms.ts:4407-4410`），然后按最高分的相对比例截断，被两个以上通道同时命中的候选豁免截断（`:4416-4422`）；过 MMR（Maximal Marginal Relevance，选结果时兼顾相关性和多样性的算法）去冗余，再过绝对分底线（默认 0.12），最后可选让 LLM 复筛——复筛失败或没配 LLM 时降级为只保留前 N 条，不报错（`Memory/src/service/retrieval/retrieval-service.ts:2401-2545`）。记忆的优先级分带 30 天半衰期的时间衰减，参与排序（`plugin-algorithms.ts:4317-4322`）。
+检索是一条可降级的多通道管道。入口 `POST /api/v1/memory/search`（`Memory/src/server/http.ts:80`），候选生成四路并行：向量（sqlite-vec 的 KNN——K 近邻，取向量最近的 K 条，先按过滤条件圈 2000 条候选窗）、FTS5（SQLite 的全文检索扩展）全文、LIKE 模式、结构化片段（`Memory/src/service/retrieval/indexed-candidate-pool.ts:99-132`）。合并用 RRF（Reciprocal Rank Fusion，倒数排名融合——多路检索结果按"排名的倒数"加权相加的合并算法）：每条候选 `relevance += 0.4 * rrf`（`Memory/src/algorithm/plugin-algorithms.ts:4407-4410`），然后按最高分的相对比例截断，被两个以上通道同时命中的候选豁免截断（`:4416-4422`）；过 MMR（Maximal Marginal Relevance，选结果时兼顾相关性和多样性的算法）去冗余，再过绝对分底线（默认 0.12），最后可选让 LLM 复筛——复筛失败或没配 LLM 时降级为只保留前 N 条，不报错（`Memory/src/service/retrieval/retrieval-service.ts:2401-2545`）。记忆的优先级分带 30 天半衰期的时间衰减，参与排序（`plugin-algorithms.ts:4317-4322`）。
 
 默认召回量按层分配候选：L1 取 3 条、L2 取 5 条、L3 取 2 条，最终结果全局上限 10 条（官方文档说明这是候选池大小而非硬性分层配额，`docs/en/memory/overview.mdx:164`）；正文片段截 640 字符，Skill 用 200 字符摘要（`:190`）。注入通道有两条：每轮开始前由 hook 调记忆服务检索，把结果包进 `<memmy_memory_context>` 标签注入、原始用户请求包进 `<current_user_request>` 标签标定为权威（`App/memmy-agent/src/memmy-memory/protocol.ts:14-37`），交互等待预算 8 秒、超时不阻塞对话（`App/memmy-agent/src/memmy-memory/client.ts:44`）；L3 世界模型渲染进 system prompt（`hook.ts:145-166`）。另一条是工具通道：模型可以主动调 `memmy_memory_search` / `memmy_memory_get`（`App/memmy-agent/src/memmy-memory/tools.ts:42-62`）。
 
@@ -118,7 +118,7 @@ Memmy 存的是所有工具的会话原文，安全设计围绕"本地明文 SQL
 - **HTTP API**：记忆服务的完整 REST 面——会话/轮次、检索、增删、管理（导出、重载配置）、面板（`Memory/src/server/http.ts:64-101`）。
 - **memmy-memory CLI**：`init/install/health/session/turn/search/add/get/delete/raw` 十个数据与生命周期命令，全局可带 `--url/--token/--user-id/--source`；支持的 agent 清单：codex、cursor、claude、opencode、openclaw、hermes、dsh、workbuddy、pi、qwenwork（`Memory/src/cli/commands.ts:593-655`）。
 - **OpenAI 兼容 API**：`memmy serve` 在 18990 端口起一个标准 Chat Completions 服务（`App/memmy-agent/src/entrypoints/openai-like-api/server.ts:67-83`）——任何能调 OpenAI 接口的 agent 都能把"带 Memmy 记忆的 agent"当成一个模型用，这是比 hook 更普适的接入面。
-- **MCP**：Model Context Protocol（让模型调用外部工具的标准协议）一等公民，支持 stdio/SSE/streamableHttp 三种传输（`App/memmy-agent/src/core/agent-runtime/tools/mcp.ts:143-149`）；原生的 GUI 操控能力就是以 `open_computer_use` 这个 stdio MCP 服务接入的（`Migrations/src/migrations/v1.1.6/0001-add-open-computer-use-mcp.ts:13-15`）。
+- **MCP**：Model Context Protocol（让模型调用外部工具的标准协议）一等公民，支持 stdio（标准输入输出）/SSE（服务器单向推送的事件流）/streamableHttp 三种传输（`App/memmy-agent/src/core/agent-runtime/tools/mcp.ts:143-149`）；原生的 GUI 操控能力就是以 `open_computer_use` 这个 stdio MCP 服务接入的（`Migrations/src/migrations/v1.1.6/0001-add-open-computer-use-mcp.ts:13-15`）。
 - **工具插件**：扫描 workspace 附近 node_modules 里带 `memmyAgent.tools` 字段的包自动发现第三方工具（`tools/loader.ts:225-252`）。
 - **接入安装器**：`memmy-memory init` 往各工具的 home 写 skill 说明和标记块（claude 的 `CLAUDE.md`、codex 的 `AGENTS.md`、hermes 的 `SOUL.md` 等，`Memory/src/cli/skill-writer/index.ts:50-91`）；`install` 再装真正的 hook/plugin——Claude Code 与 Codex 挂 `UserPromptSubmit`/`Stop`/`SessionStart`/`PostCompact`/`SessionEnd` 五个事件，OpenClaw 装的是插件（注册记忆工具加监听会话事件），hermes 装 Python 插件（`Memory/src/agent-source/integration/` 下各 target）。hook 失败只写 stderr、绝不打断宿主工具的会话（`integration/templates/memmy-resume-hook.ts:391-398`）。
 

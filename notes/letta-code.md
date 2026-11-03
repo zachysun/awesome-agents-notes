@@ -25,7 +25,7 @@ letta-code 的切入点是把"agent 的自我"做成持久资产：记忆（它�
 - `agent/`——agent 构造与记忆核心：记忆格式定义、git 钩子、worktree 管理、reflection 启动器、内置 subagent。
 - `backend/`——双后端抽象：`api/` 对接 Letta Cloud（官方托管服务，`@letta-ai/letta-client`），`local/` 是纯本地后端（直连模型、记忆全在本地文件）。`dev/` 是本地 turn 执行器。
 - `cli/`——Ink（React 的终端渲染库）写的终端界面；`tools/`——客户端工具实现；`providers/`——自带密钥（BYOK）的模型接入。
-- `websocket/`——常驻 listener / App Server（本机 WebSocket 服务，让 Slack/Telegram 等渠道和远程客户端接入）。
+- `websocket/`——常驻 listener / App Server（本机起一个 WebSocket 双向长连接服务，让 Slack/Telegram 等渠道和远程客户端接入）。
 - 其余：`skills/`、`mods/`（harness 自改机制）、`hooks/`、`sandbox/`、`permissions/`、`telemetry/`。
 
 一个与本笔记系列相关的细节：本地后端的模型调用层用的是 `@earendil-works/pi-ai`——正是 pi 项目（见 notes/pi.md）的模型接入库（`src/backend/local/compaction.ts:1-7`、`src/standalone-entry.ts:2`）。两个 agent 项目在模型接入层已经是上下游关系。
@@ -106,7 +106,7 @@ flowchart TD
 ## 扩展机制
 
 - **工具**：`defineTool({schema, description, impl})` 定义（`src/tools/define-tool.ts:24-36`）；`TOOLSET_CATALOG` 提供整套预设：`letta`（含 Memory/Task/Skill 等统一工具集）、`default`（Claude 风格）、`codex` 等（`src/tools/toolset-catalog.ts:19-87`）——一个 CLI 可以按预设切换成不同编码 agent 的工具行为。
-- **MCP**：官方 SDK，stdio/HTTP/SSE 三种传输加 OAuth（`src/mcp-client.ts:1-34`）。
+- **MCP（Model Context Protocol，让模型调用外部工具的标准协议）**：官方 SDK，stdio（标准输入输出）/HTTP/SSE（服务器单向推送的事件流）三种传输加 OAuth（开放授权协议）（`src/mcp-client.ts:1-34`）。
 - **subagent**：内置 general-purpose / recall / reflection / fork / init 五种（`src/agent/subagents/builtin/`），agent 可调其他 agent 为 subagent。Task 工具还能把外部编码 agent 当作 worker 启动，类型限定 `claude-code` 和 `codex` 两种（`src/tools/impl/task.ts:654-669`），分别经流式会话（`src/tools/impl/claude-stream-session.ts`）和 app-server 协议（`src/tools/impl/codex-app-server.ts`）驱动，可以跑在本机，也可以跑在远程 worker 上；远程 worker 永远不能接管父 agent 的 harness（`src/tools/impl/external-coding-agent-task.ts:41-42`）。
 - **subagent 的观测通道**：所有 subagent——内置的和外部 worker——的动态都经两条通路回到父 agent。精选进度：工具调用和回复文本记成进度条目，每条截到 300 字符、每个 subagent 只留最近 20 条（`src/agent/subagent-state.ts:36,38,406`），写进任务输出文件并随快照发给另一台机器上的父 agent，父 agent 不必等它跑完才知道它在干什么。内置 subagent 的进度从事件流直接提取，回复文本按消息聚合、整条消息说完才落一条（`src/agent/subagents/subagent-stream.ts:93`）；远程 run 没有事件流可挂，靠轮询消息列表补齐同样的条目，工具调用、审批请求、回复文本三类都记（`src/agent/subagents/remote-turn-wait.ts:46`），等待期间周期拉取、已结束的旧 run 只补读一次（`:128`）。全量日志：发起方在另一台机器上时，执行机在内存里为该 subagent 保留完整事件记录——单条超 256KB 截断并标注截掉多少字节、累计超 32MB 从最旧开始丢（`src/agent/subagent-events.ts:13,15`），父 agent 经 websocket 的 `read_subagent_events` 命令按序号分页拉取、单页 1MB，响应带 missed 计数告知丢了多少条（`src/agent/subagent-events.ts:17`、`src/websocket/listener/commands/subagent-events.ts:12`）。
 - **hooks 与 mods**：脚本挂钩执行关键点；mods 改 harness 本身。

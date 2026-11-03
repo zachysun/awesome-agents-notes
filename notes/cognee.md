@@ -23,7 +23,7 @@ cognee 的切入点是把"存原始数据"和"存知识"分开：原始数据先
 顶层是一个 Python 主包加一圈外围：
 
 - `cognee/`——主包。内部分层：`api/v1/`（对外三大入口 add/cognify/search）、`tasks/`（所有加工步骤的具体函数，按 chunk/graph/summarization 等分目录）、`modules/`（业务层：管道编排、检索、用户、数据集、本体）、`infrastructure/`（LLM、各类数据库、文件存储的基础设施层）、`shared/`（提示词模板、数据模型）。
-- `cognee-mcp/`——独立的 MCP 服务端包，把 remember/recall/forget 等操作暴露成 MCP 工具。
+- `cognee-mcp/`——独立的 MCP（Model Context Protocol，让模型调用外部工具的标准协议）服务端包，把 remember/recall/forget 等操作暴露成 MCP 工具。
 - `cognee-frontend/`——官网和控制台（Next.js）。仓库 193MB 的大头是这里的演示视频和图片素材，不是代码，也没有模型权重文件。
 - `evals/`、`notebooks/`、`examples/`、`distributed/`、`deployment/`——评测、示例与部署物料。
 
@@ -42,7 +42,7 @@ cognee 的切入点是把"存原始数据"和"存知识"分开：原始数据先
 
 ## 模型接入
 
-LLM 调用统一走 litellm（一个把各家大模型 API 包装成统一接口的库），入口是 `LLMGateway`（`cognee/infrastructure/llm/LLMGateway.py`），配置是 pydantic 的 `LLMConfig`（`cognee/infrastructure/llm/config.py:74`）：提供商默认 openai，模型默认 `openai/gpt-5.6-luna`（`config.py:109-110`），支持 openai/anthropic/gemini/ollama/mistral/bedrock 等。结构化输出（让模型按指定 JSON 格式返回）默认用 litellm 原生框架，可切换 BAML（`config.py:101,152-153`）。
+LLM（Large Language Model，大语言模型）调用统一走 litellm（一个把各家大模型 API 包装成统一接口的库），入口是 `LLMGateway`（`cognee/infrastructure/llm/LLMGateway.py`），配置是 pydantic 的 `LLMConfig`（`cognee/infrastructure/llm/config.py:74`）：提供商默认 openai，模型默认 `openai/gpt-5.6-luna`（`config.py:109-110`），支持 openai/anthropic/gemini/ollama/mistral/bedrock 等。结构化输出（让模型按指定 JSON 格式返回）默认用 litellm 原生框架，可切换 BAML（`config.py:101,152-153`）。
 
 嵌入配置单独一套（`cognee/infrastructure/databases/vector/embeddings/config.py:89`），有个贴心行为：没配 API key 时回退到本地的 fastembed 模型（同文件 `:24-28`）。配合抽取侧的降级——环境变量 `GRAPH_EXTRACTOR=auto` 时，有 key 用大模型抽实体，没 key 用本地 GLiNER 模型抽（`cognify.py:262-273`）——cognee 可以全程无 key、全 CPU 跑通，这是"Runs locally for free"卖点的实际支撑。
 

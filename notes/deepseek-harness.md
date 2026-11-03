@@ -18,7 +18,7 @@ DeepSeek Harness（简称 dsh）是 DeepSeek 官方开源的 agent harness：一
 
 dsh 对这个问题的回答很彻底：把"核心"取消掉。它的架构文档有一句纲领——模型适配器、工具注册表、会话日志、agent 循环本身，全都是插件，全部可以从配置替换。没有一处是"改不了的黑盒"，想扩展就是把一个新插件挂到其他插件旁边，而不是去修补某个特权核心。
 
-它落地的形态有五种，对应五种运行方式（官方叫 profile，后面细讲）：`web`（浏览器界面）、`headless`（无界面的一次性运行）、`sdk`（给开发者程序调用的库）、`acp`（只跑自动化的协议服务端）、外加一个 Electron 桌面应用。同一个内核，套不同的外壳。桌面版的做法也能看出这套架构的省力程度：Electron 里跑一个私有的 Desktop Host，Host 调用的就是同一个 `dsh` CLI 启动器和同一套网页界面，桌面进程只负责把本地页面和 Host 连起来——没有第二个"桌面版内核"要维护。
+它落地的形态有五种，对应五种运行方式（官方叫 profile，后面细讲）：`web`（浏览器界面）、`headless`（无界面的一次性运行）、`sdk`（给开发者程序调用的库）、`acp`（Agent Client Protocol，编辑器接 agent 的开放协议；这里只跑自动化的协议服务端）、外加一个 Electron（用网页技术打包桌面应用的框架）桌面应用。同一个内核，套不同的外壳。桌面版的做法也能看出这套架构的省力程度：Electron 里跑一个私有的 Desktop Host，Host 调用的就是同一个 `dsh` CLI 启动器和同一套网页界面，桌面进程只负责把本地页面和 Host 连起来——没有第二个"桌面版内核"要维护。
 
 ## 插件树是怎么拼起来的
 
@@ -220,7 +220,7 @@ dsh 还支持 PTC 模式（programmatic tool calling，程序化工具调用）�
 ```mermaid
 flowchart TD
     REQ["动作请求（带 callId，指回已展示给用户的工具调用）"] --> POL{"会话审批策略"}
-    POL -->|"never（CI / 定时任务）"| REJ2["直接拒绝，不问任何人"]
+    POL -->|"never（CI 持续集成 / 定时任务）"| REJ2["直接拒绝，不问任何人"]
     POL -->|"ask（默认）"| HUMAN["找人应答"]
     HUMAN -->|"明确 allowed-once"| OK["放行这一次，下次再问"]
     HUMAN -->|"rejected"| REJ["明确拒绝"]
@@ -356,7 +356,7 @@ stateDiagram-v2
 
 **让一个 Session 在自己的 worktree 里干活、把结果变成 PR：Forge（实验性）。** forge 组合包（`packages/experimental/forge-bundle`、`client-ui-forge`、`forge-session`，提交 fc43a2d507）在右侧栏加一个面板，列出某个 Session 创建或推送过的 pull request，Session 头部有按钮与分支标签；新建 Session 的选项行里可以让它在自己的 Git worktree（同一仓库的另一个检出目录）里启动——多个 Session 并行改同一个仓库时互不踩脚。worktree 的名字由 Session 推出（`dsh-` 前缀加 Session id 中 UUID 的前八位十六进制再加四位随机，比如 `dsh-6b1f02c4-9a3e`，提交 accd5b77c4）；worktree 还没建好时发出的消息先扣在收件箱里，面板建完再放行，失败或停止后消息保留（提交 eea6d3b7ec）。面板与变更请求（change request，GitHub 上就是 PR）之间的绑定靠证据：`gh pr view`、`gh pr edit`、`gh pr checkout` 这些命令的第一个参数 URL 与输出里打印的该 PR 的 URL 算绑定证据（来源记为 `referenced`），描述里的链接不算（提交 e99272d04e）；展开的卡片能把草稿标为可评审、按仓库允许的合并方式合并，提供方动作 `markReady` 与 `merge` 返回类型化的 `ForgeActionFailure`，注册表在动作结束后立即重新轮询该变更请求（提交 80254034c7）；会话列表显示 worktree 与变更请求状态（提交 4916ce9bff）。
 
-**定时自动化任务升级为 Host 级独立实体（2026-10-31 合并，PR 6189）。** 此前的定时任务挂在会话里，会话没了任务也就没了；现在任务（standalone task）直接属于 Host，与会话同生共死的关系被拆开。触发时间用 RRULE 表达（iCalendar 标准的重复规则，"每周一早上九点"这类写成一条字符串），投递目标有三种（`packages/schedule/schedule/src/types.ts:352-393`）：`session` 每次都投给同一个已有会话；`new_once` 首次投递时建一个会话、之后都投给它；`new` 每次投递都开全新会话。会话内管理任务的工具是四个：`schedule_create`、`schedule_list`、`schedule_view`、`schedule_edit`（`packages/schedule/tool-schedule/src/index.ts:372-431`）——建、列、看、改各一个，改与删合并进 `schedule_edit`；浏览器界面新增「Automation tasks」页，读写的是同一份 Host 级目录，会话里建的任务在页面上也管得到。下一步的计划已有提案（事件触发自动化，PR 7545，仍是 RFC 评审状态、未落地）：任务除定时外还能由事件触发，提案里设计了提供方/触发器/智能体三层过滤、只读的判定轮与 notify 卡片、任务自有的判定 Session，并明确不做"结束工具"——判定轮只表达结论，不直接操纵世界。
+**定时自动化任务升级为 Host 级独立实体（2026-10-31 合并，PR 6189）。** 此前的定时任务挂在会话里，会话没了任务也就没了；现在任务（standalone task）直接属于 Host，与会话同生共死的关系被拆开。触发时间用 RRULE 表达（iCalendar 标准的重复规则，"每周一早上九点"这类写成一条字符串），投递目标有三种（`packages/schedule/schedule/src/types.ts:352-393`）：`session` 每次都投给同一个已有会话；`new_once` 首次投递时建一个会话、之后都投给它；`new` 每次投递都开全新会话。会话内管理任务的工具是四个：`schedule_create`、`schedule_list`、`schedule_view`、`schedule_edit`（`packages/schedule/tool-schedule/src/index.ts:372-431`）——建、列、看、改各一个，改与删合并进 `schedule_edit`；浏览器界面新增「Automation tasks」页，读写的是同一份 Host 级目录，会话里建的任务在页面上也管得到。下一步的计划已有提案（事件触发自动化，PR 7545，仍是 RFC（Request for Comments，公开征求意见的标准提案）评审状态、未落地）：任务除定时外还能由事件触发，提案里设计了提供方/触发器/智能体三层过滤、只读的判定轮与 notify 卡片、任务自有的判定 Session，并明确不做"结束工具"——判定轮只表达结论，不直接操纵世界。
 
 ## 启动流程与启动加速
 

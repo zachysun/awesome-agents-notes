@@ -8,7 +8,7 @@
 
 Supermemory 自我定位是"State-of-the-art memory and context engine for AI"（`README.md:10`），GitHub star 约 3.1 万，在记忆类项目里排前四。它卖两件事：记忆（从用户数据里形成可复用的用户画像和事实）和上下文（把相关内容压缩后注入模型上下文），README 里给出的指标是 "95% Recall@15 with a 99.4% context reduction"（`README.md:32-33`）。
 
-读这份笔记前必须知道一个事实：**记忆引擎本体不在这个仓库里**。官方自托管文档写明："The SDKs and other components in the public repository are open source; the downloadable self-hosted server binary is built from a separate, non-public codebase"（`apps/docs/self-hosting/overview.mdx:20`）。仓库里开源的是三样东西：MCP 服务端全套源码（`apps/mcp`）、面向各 AI 框架的接入胶水（`packages/tools`）、引擎数据模型的类型镜像（`packages/validation`），外加一套非常细致的官方文档（`apps/docs`）。这决定了这篇笔记的读法：它一半讲代码，一半讲"从接口契约和数据模型反推引擎的设计判断"，每个论断会注明证据来自代码还是文档。
+读这份笔记前必须知道一个事实：**记忆引擎本体不在这个仓库里**。官方自托管文档写明："The SDKs and other components in the public repository are open source; the downloadable self-hosted server binary is built from a separate, non-public codebase"（`apps/docs/self-hosting/overview.mdx:20`）。仓库里开源的是三样东西：MCP（Model Context Protocol，模型接外部工具的标准协议）服务端全套源码（`apps/mcp`）、面向各 AI 框架的接入胶水（`packages/tools`）、引擎数据模型的类型镜像（`packages/validation`），外加一套非常细致的官方文档（`apps/docs`）。这决定了这篇笔记的读法：它一半讲代码，一半讲"从接口契约和数据模型反推引擎的设计判断"，每个论断会注明证据来自代码还是文档。
 
 这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `16ed414`（2026-11-02）。
 
@@ -88,12 +88,12 @@ flowchart TD
 - **MCP**：`apps/mcp` 全套源码，工具覆盖增删查遗忘，按 namespace 隔离。
 - **框架中间件**：`packages/tools` 五个入口，接入即得完整的记忆对话流程。
 - **Claude 记忆桥**：`claude-memory.ts` 把 Claude 原生 memory tool 的文件操作映射成 Supermemory 文档——路径强制 `/memories/` 前缀、文件名用 `cm_` 前缀可逆编码成文档 id（`packages/tools/src/claude-memory.ts:63-98`）。一个"把别人家的记忆接口翻译到自己引擎上"的干净范例。
-- **Connectors**：Google Drive、Gmail、Notion、GitHub 等 7 种数据源接入，OAuth 凭证存 Connection 模型（文档证据，`apps/docs/connectors/overview.mdx:7-12`）。
+- **Connectors**：Google Drive、Gmail、Notion、GitHub 等 7 种数据源接入，OAuth（开放授权协议）凭证存 Connection 模型（文档证据，`apps/docs/connectors/overview.mdx:7-12`）。
 - **SMFS**（实验性）：把记忆容器挂载成文件系统，`grep` 默认变成语义检索（文档证据，`apps/docs/smfs/overview.mdx:5-27`）。
 
 ## 可观测性与评估
 
-开源侧有两个可看的点。一是请求级计量模型：`ApiRequestSchema`（`packages/validation/schemas.ts:181-216`）记录每次请求的耗时、token 数，以及两个有意思的字段——`tokensSaved` 和 `costSavedUSD`（`:196-200`）：上下文压缩替用户省了多少钱被当成一等指标记录。"记忆系统的价值"在这里被换算成了可对账的数字。二是 MCP 的遥测设计：PostHog 上报用无身份的哈希 id、只报元数据事件、明确"不把身份内容序列化进遥测"（`apps/mcp/src/server/analytics.ts:8-37`）；自托管可设 `SUPERMEMORY_DISABLE_TELEMETRY=1` 关闭（文档证据，`self-hosting/overview.mdx:44`）。评测方面仓库带 LongMemEval/LoCoMo/ConvoMem 三个基准的说明文档（`apps/docs/memorybench/`），README 的分数声明出自这里。
+开源侧有两个可看的点。一是请求级计量模型：`ApiRequestSchema`（`packages/validation/schemas.ts:181-216`）记录每次请求的耗时、token 数，以及两个有意思的字段——`tokensSaved` 和 `costSavedUSD`（`:196-200`）：上下文压缩替用户省了多少钱被当成一等指标记录。"记忆系统的价值"在这里被换算成了可对账的数字。二是 MCP 的遥测设计：PostHog 上报用无身份的哈希 id、只报元数据事件、明确"不把身份内容序列化进遥测"（`apps/mcp/src/server/analytics.ts:8-37`）；自托管可设 `SUPERMEMORY_DISABLE_TELEMETRY=1` 关闭（文档证据，`self-hosting/overview.mdx:44`）。评测方面仓库带 LongMemEval/LoCoMo/ConvoMem 三个长对话记忆基准的说明文档（`apps/docs/memorybench/`），README 的分数声明出自这里。
 
 ## Agent Loop
 

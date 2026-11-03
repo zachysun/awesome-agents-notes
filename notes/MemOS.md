@@ -20,9 +20,9 @@ MemOS 自称"记忆操作系统"（Memory Operating System），由 MemTensor �
 
 ## 仓库怎么分工
 
-- `src/memos/`——Python 核心包。`mem_os/` 是编排层（MOS 类）；`memories/` 是三类记忆的数据结构与其存储实现（textual 下有树形图存储和扁平向量存储两套）；`mem_reader/` 是记忆抽取；`mem_scheduler/` 是记忆调度器；`graph_dbs/`、`vec_dbs/`、`llms/`、`embedders/` 是四类后端；`api/` 是 REST 和 MCP 服务。
+- `src/memos/`——Python 核心包。`mem_os/` 是编排层（MOS 类）；`memories/` 是三类记忆的数据结构与其存储实现（textual 下有树形图存储和扁平向量存储两套）；`mem_reader/` 是记忆抽取；`mem_scheduler/` 是记忆调度器；`graph_dbs/`、`vec_dbs/`、`llms/`、`embedders/` 是四类后端；`api/` 是 REST 和 MCP（Model Context Protocol，让模型调用外部工具的标准协议）服务。
 - `packages/` 与 `apps/`——TypeScript 侧：适配器基础库和各 agent 的本地插件（deepseek-harness/openclaw/hermes 适配在这里），含本地嵌入模型与 SQLite 存储。
-- `evaluation/`——五套基准（LoCoMo、LongMemEval、PrefEval、LongBench-v2、PersonaMem）的评测脚本，独立于主包，pip 安装不包含。
+- `evaluation/`——五套基准（LoCoMo、LongMemEval、PrefEval、LongBench-v2、PersonaMem，都是衡量记忆系统的公开测试集）的评测脚本，独立于主包，pip 安装不包含。
 
 核心包的依赖方向：mem_os 编排层向下调用 memories 和 mem_scheduler，两者再向下调用各后端工厂。后端选择全部走配置（pydantic 配置类 + 工厂函数），没有插件发现机制之外的隐式耦合。
 
@@ -40,7 +40,7 @@ MemOS 的核心抽象有两个。**MemCube**（记忆容器，`src/memos/mem_cub
 
 ## 模型接入
 
-LLM 工厂（`src/memos/llms/factory.py:20-31`）支持 10 种后端：openai、azure、ollama、huggingface（本地）、vllm、qwen、deepseek、minimax 等。嵌入工厂（`src/memos/embedders/factory.py:17-22`）4 种，其中 `universal_api` 可接任意 OpenAI 兼容端点。配置全走 pydantic 配置工厂；不带任何配置启动 MOS 时从环境变量自动组装（需要 `OPENAI_API_KEY`，`mem_os/main.py:57-77`）。
+LLM（Large Language Model，大语言模型）工厂（`src/memos/llms/factory.py:20-31`）支持 10 种后端：openai、azure、ollama、huggingface（本地）、vllm、qwen、deepseek、minimax 等。嵌入工厂（`src/memos/embedders/factory.py:17-22`）4 种，其中 `universal_api` 可接任意 OpenAI 兼容端点。配置全走 pydantic 配置工厂；不带任何配置启动 MOS 时从环境变量自动组装（需要 `OPENAI_API_KEY`，`mem_os/main.py:57-77`）。
 
 ## 记忆写入
 
@@ -69,13 +69,13 @@ flowchart TD
 
 两类记忆的差别要记准：**默认不是图**——快速上手的示例跑的是"向量 + JSON 文件"，图形态要显式配置 `tree_text`。README 的 docker 自托管路径才默认 Neo4j + Qdrant 双件套。
 
-激活记忆（`src/memos/memories/activation/item.py:32`）是 KV 缓存形态：把若干条文本记忆拼成一段文本（`MEMORY_ASSEMBLY_TEMPLATE`），调 `build_kv_cache` 预计算成 HuggingFace 的 `DynamicCache` 张量。它只在本地模型后端生效——OpenAI 这类 API 模型收不到现成的 KV 张量，直接跳过（`core.py:314-316`）；vLLM 路径是服务端 prompt 预载。参数记忆是占位：`src/memos/memories/parametric/lora.py:1-6` 文件头明确写着 placeholder、不要当功能用，`dump` 方法写入的字面量就是 `b"Placeholder"`。论文里的"记忆注入参数"在开源实现里不存在。
+激活记忆（`src/memos/memories/activation/item.py:32`）是 KV 缓存形态：把若干条文本记忆拼成一段文本（`MEMORY_ASSEMBLY_TEMPLATE`），调 `build_kv_cache` 预计算成 HuggingFace 的 `DynamicCache` 张量。它只在本地模型后端生效——OpenAI 这类 API 模型收不到现成的 KV 张量，直接跳过（`core.py:314-316`）；vLLM（一个主流的开源大模型推理引擎）路径是服务端 prompt 预载。参数记忆是占位：`src/memos/memories/parametric/lora.py:1-6` 文件头明确写着 placeholder、不要当功能用，`dump` 方法写入的字面量就是 `b"Placeholder"`。论文里的"记忆注入参数"在开源实现里不存在。
 
 ## 记忆检索
 
 `MOSCore.search`（`core.py:546`）对每个有权限的 MemCube 并行执行。单 cube 内部（`src/memos/memories/textual/tree_text_memory/retrieve/searcher.py`）：先让 LLM 解析查询意图（改写查询、提取记忆类型和关键词，`retrieve/task_goal_parser.py:30`），然后按类型六路并行召回——工作记忆路、长期+用户记忆路、工具记忆路、技能路、偏好路、关键词全文路；联网检索路存在但默认关闭。每路召回后过重排（默认本地余弦相似度重排，`tree.py:63-73`），最后按 id 去重合并、排序截断。
 
-多路融合的实现值得注意：`GraphMemoryRetriever` 并行跑图匹配、向量、BM25、全文四路，然后**按 id 去重取并集**（`retrieve/recall.py:179-184`）——没有 RRF 那样的分数级融合，一条记忆被多路命中也不会加权。这是一个"实现比叙事朴素"的例子：文档读起来像精密的混合检索，代码是无权重的合并。另外检索代码的注释里宣称流程终点是 MemoryReasoner（推理精选组件），但该组件在主管道中从未被调用（`searcher.py:211-213` 对比 `:69`）——又一个文档与实现的落差。
+多路融合的实现值得注意：`GraphMemoryRetriever` 并行跑图匹配、向量、BM25（按词频打分的关键词检索算法）、全文四路，然后**按 id 去重取并集**（`retrieve/recall.py:179-184`）——没有 RRF（Reciprocal Rank Fusion，倒数排名融合——把多路检索的排名合成一个总分）那样的分数级融合，一条记忆被多路命中也不会加权。这是一个"实现比叙事朴素"的例子：文档读起来像精密的混合检索，代码是无权重的合并。另外检索代码的注释里宣称流程终点是 MemoryReasoner（推理精选组件），但该组件在主管道中从未被调用（`searcher.py:211-213` 对比 `:69`）——又一个文档与实现的落差。
 
 ## 更新与遗忘
 
@@ -91,7 +91,7 @@ flowchart TD
 ## 服务化与扩展
 
 - **REST**：FastAPI，路由前缀 `/product`（不是 `/v1`）：search、add（支持异步模式）、create_cube、chat、feedback 等（`src/memos/api/routers/server_router.py:68` 起）。
-- **MCP**：FastMCP 实现的 stdio 服务，约 17 个工具（chat、search_memories、add_memory、dump_cube、share_cube、控制调度器等，`src/memos/api/mcp_serve.py:129-568`）。
+- **MCP**：FastMCP（一个 MCP 服务端框架）实现的 stdio（标准输入输出）服务，约 17 个工具（chat、search_memories、add_memory、dump_cube、share_cube、控制调度器等，`src/memos/api/mcp_serve.py:129-568`）。
 - **插件**：`src/memos/plugins/` 有基于钩子的插件系统（内置的 dream 插件即由此挂载）；面向 agent 的适配在 TS 侧（前文提到的三个 agent 插件）。
 - **后端注册**：四类后端（图/向量/LLM/嵌入）都是工厂 + 配置，新增后端写实现类、注册进工厂表。
 

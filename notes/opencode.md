@@ -16,7 +16,7 @@ AI 写代码这件事，难点从来不只是"模型够不够聪明"，还有一
 
 - **模型锁定**。今天最强的模型和明年最强的模型往往不是同一家。agent 如果绑死一家，用户就被绑死了。OpenCode 把"接模型"做成标准接口，模型可以随时换。
 - **安全**。AI 要帮你改文件、跑命令，就意味着它有能力删你的数据、执行危险操作。谁来决定"这件事 AI 能不能做"？OpenCode 的答案是一张明确的权限规则表（见"权限与策略"一节），而不是让模型自己判断。
-- **生态**。编辑器、语言服务、外部工具，每个领域都有成熟标准。OpenCode 不重造这些轮子，而是把标准接进来：编辑器对接走 ACP 协议，代码理解走 LSP 协议，外部工具走 MCP 协议。
+- **生态**。编辑器、语言服务、外部工具，每个领域都有成熟标准。OpenCode 不重造这些轮子，而是把标准接进来：编辑器对接走 ACP（Agent Client Protocol，编辑器接 agent 的开放协议）协议，代码理解走 LSP（Language Server Protocol，语言服务器协议）协议，外部工具走 MCP（Model Context Protocol，模型接外部工具的协议）协议。
 - **多端一致**。同一个核心，要有终端界面、桌面应用、网页版，还要能给第三方程序当后端。OpenCode 的做法是把核心逻辑放进一个本地 HTTP 服务，所有界面都是这个服务的客户端。
 
 剩下的部分（上下文太长怎么办、配置怎么合并、事件怎么广播）都是围绕这四个问题长出来的，后面的章节逐个展开。
@@ -65,7 +65,7 @@ flowchart LR
 
 代码里到处能看到 `InstanceState.make(...)` 和 `ctx.directory`，这是一个值得单独解释的概念：OpenCode 的核心服务（配置、agent 列表、LSP 客户端、权限状态等）不是全局唯一一份，而是按"实例"（instance，即一个工作目录）各存一份状态。同一个进程可以同时服务多个项目目录，每个目录有自己的配置合并结果、自己的 agent、自己的语言服务器进程，切换目录拿的是另一套实例状态，互不串味。这也解释了为什么事件发布要附带目录信息：订阅方靠它区分"这件事发生在哪个项目"。
 
-实例不是永驻的。一个项目位置（location，即一个被打开的工作目录）在没有会话活动时会被卸载——它的配置、agent、语言服务器进程等服务全部释放，下次用到再加载。空闲多久卸载由 `experimental.location_idle_timeout` 控制（`packages/core/src/location-activity.ts`，提交 d898c048ae）：接受 `"2 hours"` 这类时长写法，默认 60 分钟，设为 `false` 永不卸载，项目配置可以覆盖全局值。正在运行的会话和后台任务（background job）都算活动，位置因此保持加载，任务不会跑到一半被卸载（提交 89d996c2c5）。活动的定义后来还扩了一次（提交 1908fcb8b7）：开着的 PTY WebSocket 与客户端 MCP WebSocket 也算活动（`packages/core/src/location-lifecycle.ts`、`location-activity.ts`），界面还连着终端的位置不会被卸载；位置因其他原因关停（重载、VCS 初始化、调试驱逐）时，这些 socket 以 1012（服务重启）关闭码收尾，客户端立刻重连到顶替的新位置（`packages/server/src/handlers/pty-socket.ts:35-47`）。一个进程开过的项目越多，不回收就越像内存泄漏；按活动回收是"一个进程管多个项目"必须配套的另一半。
+实例不是永驻的。一个项目位置（location，即一个被打开的工作目录）在没有会话活动时会被卸载——它的配置、agent、语言服务器进程等服务全部释放，下次用到再加载。空闲多久卸载由 `experimental.location_idle_timeout` 控制（`packages/core/src/location-activity.ts`，提交 d898c048ae）：接受 `"2 hours"` 这类时长写法，默认 60 分钟，设为 `false` 永不卸载，项目配置可以覆盖全局值。正在运行的会话和后台任务（background job）都算活动，位置因此保持加载，任务不会跑到一半被卸载（提交 89d996c2c5）。活动的定义后来还扩了一次（提交 1908fcb8b7）：开着的 PTY（伪终端）WebSocket（双向长连接协议）与客户端 MCP WebSocket 也算活动（`packages/core/src/location-lifecycle.ts`、`location-activity.ts`），界面还连着终端的位置不会被卸载；位置因其他原因关停（重载、VCS 初始化、调试驱逐）时，这些 socket 以 1012（服务重启）关闭码收尾，客户端立刻重连到顶替的新位置（`packages/server/src/handlers/pty-socket.ts:35-47`）。一个进程开过的项目越多，不回收就越像内存泄漏；按活动回收是"一个进程管多个项目"必须配套的另一半。
 
 可移植性上还有个小细节：数据库模块通过 import 映射表（`#sqlite`，`packages/core/package.json:35-40`）区分运行环境——workerd、Bun、Node 三个条件各指一个实现，都没匹配到默认走 Node。Bun 与 Node 两路用的都是 Effect 官方的 SQLite 客户端（`@effect/sql-sqlite-bun` / `@effect/sql-sqlite-node`，套 `Layer.orDie`，`packages/core/src/database/sqlite.bun.ts:10-13`、`sqlite.node.ts:10-13`），workerd 一路仍是自写实现；同一套代码三种运行时都能跑。
 
@@ -153,7 +153,7 @@ flowchart TD
     RESTORE --> SETTLE["上一进程遗留的'执行中'工具调用<br/>结算为失败，绝不重放说不清的副作用"]
 ```
 
-声明的另一头是后台任务：后台 shell、subagent、图片生成这类活儿同样要跨进程接续。它们的恢复标记原先记在通用的 KV 表里，现在搬进专用的 `job` 表（迁移 `20261030054400_job`，提交 664c8f0990），重启后的接续读取也走这张表。
+声明的另一头是后台任务：后台 shell、subagent、图片生成这类活儿同样要跨进程接续。它们的恢复标记原先记在通用的 KV（key-value，键值对）表里，现在搬进专用的 `job` 表（迁移 `20261030054400_job`，提交 664c8f0990），重启后的接续读取也走这张表。
 
 **一步可能有多次物理尝试；指令是值增量。** 每一步（Step，一次"模型与工具的往返"）大多数时候就是一次对模型的物理请求，但通用重试、继续状态被拒、不完整的流续传、溢出触发的压缩，都可以在不重新准入输入的情况下再试一次；工具调用在副作用开始前先持久化，工具调用 ID 只在一步内唯一，所以持久事件还要带上它所属的助手消息 ID。指令（发给模型的那些"提示词素材"：内置说明、发现的技能指引、引用、MCP 指引）按内容寻址存储——正文以哈希为键只存一份，事件里只发"哪些键变了"的增量；每次模型请求前并发读一遍所有指令源、原子提交一个增量；压缩结束开启新的指令世代（epoch，一个版本区间，跨压缩推进），分叉的会话拿父会话最新值当基线。规格专门强调"没有指令注册表"：指令不是一份固定名单，而是值加增量的流。增量里甚至容得下纯重排（提交 3960ebb5b9）：同一组指令源、内容都没变、只有顺序变了时，渲染器可以不产出新文本（`packages/core/src/instructions/index.ts:110-113`），提交事件照发、只是增量不带正文（`session/instruction-state.ts:44-60`），界面不必插一条系统消息——修复之前，纯重排会让整个回合以缺陷失败。
 
@@ -361,7 +361,7 @@ OpenCode 的"开放"分两层：接模型靠插件，扩展行为也靠插件。
 
 **标准接口**。插件实现 `@opencode-ai/plugin` 包定义的 `PluginModule` 接口：一个函数，接收 `PluginInput`（包含调用本机服务的 client、项目目录、`Bun.$` shell 等能力），返回一组 **Hooks**（钩子，程序在特定时机留出的挂载点）。钩子的调用模式很统一：`trigger(名字, 输入, 输出)`，钩子函数原地修改输出对象。已注册的钩子点包括 `tool.definition`（改工具定义）、`experimental.chat.messages.transform`（改发给模型的消息列表）、`experimental.session.compacting`（压缩时注入上下文或替换压缩提示词）等。核心只定义接口、在固定时机调用，具体插件做什么它不管。
 
-**内置认证插件**（`plugin/` 目录）：OpenAI Codex、GitHub Copilot、Modal、GitLab、Poe、Cloudflare（Workers 和 AI Gateway 两种）、Azure、DigitalOcean、Snowflake Cortex、xAI、Cerebras。每家服务商的登录方式不同（API 密钥、OAuth 网页授权、订阅账号），插件把"怎么登这家"封装掉，用户只需 `opencode auth login` 选一家。
+**内置认证插件**（`plugin/` 目录）：OpenAI Codex、GitHub Copilot、Modal、GitLab、Poe、Cloudflare（Workers 和 AI Gateway 两种）、Azure、DigitalOcean、Snowflake Cortex、xAI、Cerebras。每家服务商的登录方式不同（API 密钥、OAuth（开放授权协议）网页授权、订阅账号），插件把"怎么登这家"封装掉，用户只需 `opencode auth login` 选一家。
 
 **外部插件**。配置里写 `plugin: ["npm包名"]`，加载器（`loader.ts`）负责从 npm 安装（安装在后台异步进行，不阻塞启动）并加载。加载是严格串行的，注释里写明原因：保证钩子注册和执行顺序在不同运行之间一致。插件加载失败不会弄垮主程序，错误会作为会话事件上报，界面能看到。串行加载也带出一个时序问题：安装是异步的，会话跑起来时插件可能还没就绪——一个依赖插件钩子的会话，头几步就会漏掉插件本该处理的事件。现在每一步执行、每一次工具调用之前都等待插件激活完成（`packages/core/src/session/prompt.ts:38`、`generate.ts:35` 的 `Plugin.awaitActivation`），激活中的钩子不会漏接事件（提交 b64cc80db3）。
 
@@ -401,11 +401,11 @@ ACP（Agent Client Protocol，智能体客户端协议）解决的是另一个�
 - 交互：`prompt`（发送用户输入，这是核心动作）、`cancel`（打断进行中的任务）；
 - 运行中调整：`setSessionModel`（换模型）、`setSessionMode`（换模式）、`setSessionConfigOption`（改会话级配置）。
 
-初始化时的能力声明也值得一看：支持加载历史会话、支持 HTTP 和 SSE 两种 MCP 服务、提示里可以内嵌上下文和图片。协议的职责边界很清晰：它规定"外面的人怎么跟你打交道"，agent 内部怎么干活它不管。Zed 等编辑器已经支持 ACP，接上就能用 OpenCode。
+初始化时的能力声明也值得一看：支持加载历史会话、支持 HTTP 和 SSE（Server-Sent Events，服务器单向推送的事件流）两种 MCP 服务、提示里可以内嵌上下文和图片。协议的职责边界很清晰：它规定"外面的人怎么跟你打交道"，agent 内部怎么干活它不管。Zed 等编辑器已经支持 ACP，接上就能用 OpenCode。
 
 顺带把三个"协议"放在一起分辨：**ACP** 管编辑器怎么接 agent，**LSP** 管编辑器（或 agent）怎么接语言理解能力，**MCP**（Model Context Protocol，模型上下文协议）管 AI 助手怎么接外部工具和数据源。三者各管一段，OpenCode 三个都用。
 
-MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：通常是 opencode 作为 MCP 客户端，主动去连外部工具服务器；client MCP 反过来——客户端应用（编辑器、TUI）自己跑 MCP 服务器，opencode 通过客户端应用打开的入站 WebSocket 连它。为什么要反转？有的宿主环境不允许子进程对外拨号连接，但宿主自己可以开一个本地服务端等别人来连——传输方向跟着宿主的能力走。注释里把边界写得很清楚：只有连接方向反转，传输从不主动外拨，只服务于进来的连接（`packages/core/src/mcp/socket-client.ts:12-18`）。客户端侧的 `connectClientMcp` 助手收一组工具定义，工具以 `<应用名>_<工具名>` 的形式暴露给模型，每次调用还带发起它的会话 ID；浏览器发不了认证头，就改用 URL 里的 ticket（`packages/client/src/mcp.ts:8`、`:10`、`:31-33`）。TUI 的实验性 `open_terminal` 走的就是这条路（提交 0030a705a3、4535146139、4a6dacec5e、0b93f0b749）：宿主把终端能力以 MCP 工具的形式交给 agent，opencode 自己不必开进程。作为客户端连接外部服务器时也多了一分耐性，而且这套耐性后来整段重做过（提交 42287632a8，PR 60733）：单个工具的 schema 畸形时记一条警告、跳过这个工具，服务器上其余正常的工具照常加载——一个坏工具不再拖垮整台服务器。实现上，opencode 先给 MCP 客户端 SDK 打了补丁（`patches/@modelcontextprotocol%2Fclient@2.3.1.patch`），让工具清单不再由 SDK 逐个校验——原来清单里有一个坏工具，SDK 会把整个清单拒掉；现在清单原样进来，opencode 自己逐个检查（`packages/core/src/mcp/client.ts:390-435`）：非对象、名字不是非空字符串、inputSchema 不是对象、声明了 type 却不是 object 的，各自跳过并记下原因；过检的工具拷贝成 opencode 自己的 Tool 形状（类型不符的字段直接丢弃），顶层 inputSchema 规范化补上 `type: "object"`——有的提供方按 JSON Schema 元模式校验工具参数，顶层畸形会连整个请求一起拒掉。清单获取绕过 SDK 的工具缓存（`cacheMode: "bypass"`），调用时把该工具的定义随请求带上、只编译这一个；服务端按 SEP-2243 以 -32020 拒绝"请求头与过期定义不符"的调用时，重新拉一次清单、用新定义重试一次（`packages/core/src/mcp/client.ts:41-42`、`:492-498`）。模型请求也肯等还在连接中的服务器一小会儿（提交 c811c0cb51）：启动宽限 2 秒、从连接尝试起算（`packages/core/src/mcp/index.ts:117-118`），`awaitStartup` 把仍在连接的服务器并发等齐（`:857-867`）；每次模型请求组装工具时，`McpTool.flush` 先确认初始注册完成、等宽限内的连接、必要时把注册表追平（`packages/core/src/tool/mcp.ts:26-30`、`:146-154`，`session/context.ts:132`）——刚起步的 MCP 服务器不再因为慢半拍就从第一次请求里缺席。stdio 方式的服务器还换了一层地基：消息分帧不再依赖 MCP SDK 的读缓冲，自己按消息边界切，单条消息上限 16 MiB（`packages/core/src/mcp/stdio.ts:15`，提交 1a443ae42a）。
+MCP 这一格还有个方向反转的玩法（实验性，2026-10 下旬）：通常是 opencode 作为 MCP 客户端，主动去连外部工具服务器；client MCP 反过来——客户端应用（编辑器、TUI）自己跑 MCP 服务器，opencode 通过客户端应用打开的入站 WebSocket 连它。为什么要反转？有的宿主环境不允许子进程对外拨号连接，但宿主自己可以开一个本地服务端等别人来连——传输方向跟着宿主的能力走。注释里把边界写得很清楚：只有连接方向反转，传输从不主动外拨，只服务于进来的连接（`packages/core/src/mcp/socket-client.ts:12-18`）。客户端侧的 `connectClientMcp` 助手收一组工具定义，工具以 `<应用名>_<工具名>` 的形式暴露给模型，每次调用还带发起它的会话 ID；浏览器发不了认证头，就改用 URL 里的 ticket（`packages/client/src/mcp.ts:8`、`:10`、`:31-33`）。TUI 的实验性 `open_terminal` 走的就是这条路（提交 0030a705a3、4535146139、4a6dacec5e、0b93f0b749）：宿主把终端能力以 MCP 工具的形式交给 agent，opencode 自己不必开进程。作为客户端连接外部服务器时也多了一分耐性，而且这套耐性后来整段重做过（提交 42287632a8，PR 60733）：单个工具的 schema 畸形时记一条警告、跳过这个工具，服务器上其余正常的工具照常加载——一个坏工具不再拖垮整台服务器。实现上，opencode 先给 MCP 客户端 SDK 打了补丁（`patches/@modelcontextprotocol%2Fclient@2.3.1.patch`），让工具清单不再由 SDK 逐个校验——原来清单里有一个坏工具，SDK 会把整个清单拒掉；现在清单原样进来，opencode 自己逐个检查（`packages/core/src/mcp/client.ts:390-435`）：非对象、名字不是非空字符串、inputSchema 不是对象、声明了 type 却不是 object 的，各自跳过并记下原因；过检的工具拷贝成 opencode 自己的 Tool 形状（类型不符的字段直接丢弃），顶层 inputSchema 规范化补上 `type: "object"`——有的提供方按 JSON Schema 元模式校验工具参数，顶层畸形会连整个请求一起拒掉。清单获取绕过 SDK 的工具缓存（`cacheMode: "bypass"`），调用时把该工具的定义随请求带上、只编译这一个；服务端按 SEP-2243 以 -32020 拒绝"请求头与过期定义不符"的调用时，重新拉一次清单、用新定义重试一次（`packages/core/src/mcp/client.ts:41-42`、`:492-498`）。模型请求也肯等还在连接中的服务器一小会儿（提交 c811c0cb51）：启动宽限 2 秒、从连接尝试起算（`packages/core/src/mcp/index.ts:117-118`），`awaitStartup` 把仍在连接的服务器并发等齐（`:857-867`）；每次模型请求组装工具时，`McpTool.flush` 先确认初始注册完成、等宽限内的连接、必要时把注册表追平（`packages/core/src/tool/mcp.ts:26-30`、`:146-154`，`session/context.ts:132`）——刚起步的 MCP 服务器不再因为慢半拍就从第一次请求里缺席。stdio（标准输入输出）方式的服务器还换了一层地基：消息分帧不再依赖 MCP SDK 的读缓冲，自己按消息边界切，单条消息上限 16 MiB（`packages/core/src/mcp/stdio.ts:15`，提交 1a443ae42a）。
 
 ## 配置系统
 
@@ -503,7 +503,7 @@ flowchart LR
 
 事件之外的另一路观测是分布式追踪（trace，把一次工作经过的每一步记成有层级关系的 span，串成一条可以整体回看的轨迹）。开关是环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT`（OTLP 是 OpenTelemetry 的导出协议）：不设就没有追踪层、零开销（`packages/util/src/observability/otlp.ts:74-75`）；设了之后 span 经 OTLP/HTTP 发往该端点的 `/v1/traces`（`:93-101`），日志也可以发往 `/v1/logs`（`:67`）。
 
-根 trace 有两类，划分的依据是"谁该为一段耗时负责"。每条 HTTP 请求一条：进程启动的上下文与路由构建都特意摘掉父 span（`withoutParentSpan`，`packages/server/src/process.ts`、`fetch.ts:43-46`）——否则每个请求、每个会话回合都会挂在启动那一条 trace 下面，整个进程的一生挤成一根不可读的长条。每个会话回合一条：回合的执行循环（drain，把会话待处理输入取出来跑的那个循环）自带根 span，不管唤醒它的是哪个 fiber（`packages/core/src/session/runner/llm.ts:63-64`），span 上带会话 ID（`llm.ts:438`）。属性沿用生成式 AI 的语义约定（gen_ai.* 前缀）：LLM 步记提供方与模型（`step.ts:78-79`），结束时记完成原因、输入输出与缓存读取的 token 数、首字耗时（`step.ts:184-191`）；工具 span 记工具名、调用 ID 与会话 ID（`packages/core/src/tool.ts`）。同一次提交还做了一遍降噪，删掉 LLM 事件转发包装这类纯噪声 span（`session/runner/publish-llm-event.ts`）。有了每回合一条的 trace，"这一个回合慢在哪"从推断变成了翻记录。
+根 trace 有两类，划分的依据是"谁该为一段耗时负责"。每条 HTTP 请求一条：进程启动的上下文与路由构建都特意摘掉父 span（span 即追踪里的一段耗时区间，trace 由多段 span 串成；`withoutParentSpan`，`packages/server/src/process.ts`、`fetch.ts:43-46`）——否则每个请求、每个会话回合都会挂在启动那一条 trace 下面，整个进程的一生挤成一根不可读的长条。每个会话回合一条：回合的执行循环（drain，把会话待处理输入取出来跑的那个循环）自带根 span，不管唤醒它的是哪个 fiber（`packages/core/src/session/runner/llm.ts:63-64`），span 上带会话 ID（`llm.ts:438`）。属性沿用生成式 AI 的语义约定（gen_ai.* 前缀）：LLM 步记提供方与模型（`step.ts:78-79`），结束时记完成原因、输入输出与缓存读取的 token 数、首字耗时（`step.ts:184-191`）；工具 span 记工具名、调用 ID 与会话 ID（`packages/core/src/tool.ts`）。同一次提交还做了一遍降噪，删掉 LLM 事件转发包装这类纯噪声 span（`session/runner/publish-llm-event.ts`）。有了每回合一条的 trace，"这一个回合慢在哪"从推断变成了翻记录。
 
 ### 存储：SQLite 与媒体去重
 

@@ -128,7 +128,7 @@ flowchart TD
 
 遥测用 PostHog 匿名上报（`mem0/memory/telemetry.py`），采集的是组件类名、向量维度、Python 版本这类环境元数据，业务事件里的作用域 id 只上报 SHA 编码（`main.py:1214-1219`）。热路径事件抽样 10%（`telemetry.py:32`），生命周期事件全量上报。设环境变量 `MEM0_TELEMETRY=False` 关闭（`telemetry.py:14-20`）。
 
-评测框架在另一个仓库（mem0ai/memory-benchmarks），本仓库的 `evaluation/` 目录是空的。README 里的基准分数（LoCoMo 92.5 等）注明来自托管平台，开源版结果"方向一致但不完全相同"（`README.md:68`）——引用这些数字时要注意出处。
+评测框架在另一个仓库（mem0ai/memory-benchmarks），本仓库的 `evaluation/` 目录是空的。README 里的基准分数（长对话记忆基准 LoCoMo 92.5 等）注明来自托管平台，开源版结果"方向一致但不完全相同"（`README.md:68`）——引用这些数字时要注意出处。
 
 ## Agent Loop
 
