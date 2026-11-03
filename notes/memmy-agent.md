@@ -6,7 +6,7 @@
 | 主语言 | TypeScript（GUI 操控与本机历史采集另有 Swift/Go/PowerShell 原生辅助程序） |
 | 笔记基准 | commit `265f6d7`（2026-11-02） |
 
-Memmy 是 MemTensor（MemOS 的开发团队，本笔记另有 MemOS 专篇）出品的"个人记忆基础设施"，GitHub star 约 2200。它由三块组成：一个跑在本机的记忆服务（默认 `127.0.0.1:18960`）、一套从各家 AI 编码工具本地数据里读取工作历史的适配器、以及一个自带的 agent 运行时。三种使用形态：桌面端应用（Electron）、`memmy` 命令行加终端界面（TUI，基于 Ink，一个用 React 写终端界面的库）、独立编译的 `memmy-memory` 记忆服务命令行。端口规划：记忆服务 18960、网关健康检查 18970、WebUI 18980、OpenAI 兼容 API 18990（`docs/cn/reference/ports.mdx:8-15`）。
+Memmy 是 MemTensor（MemOS 的开发团队，本笔记另有 MemOS 专篇）出品的"个人记忆基础设施"，GitHub star 约 2200。它由三块组成：一个跑在本机的记忆服务（默认 `127.0.0.1:18960`）、一套从各家 AI 编码 agent 本地数据里读取工作历史的适配器、以及一个自带的 agent 运行时。三种使用形态：桌面端应用（Electron）、`memmy` 命令行加终端界面（TUI，基于 Ink，一个用 React 写终端界面的库）、独立编译的 `memmy-memory` 记忆服务命令行。端口规划：记忆服务 18960、网关健康检查 18970、WebUI 18980、OpenAI 兼容 API 18990（`docs/cn/reference/ports.mdx:8-15`）。
 
 这个项目和本笔记系列其他记忆篇的根本差异在接入方式上。mem0、cognee、graphiti 是给应用调用的库，supermemory 靠 SDK 和中间件接入，MemOS 靠插件接入——它们都要求"应用一侧发生点什么"。Memmy 的做法是绕开应用：Claude Code、Codex、Cursor 这些工具本来就把完整会话写在本地磁盘（JSONL 文件或 SQLite 数据库），Memmy 直接读这些文件收割历史，不需要任何一个工具做改造；它自带的适配器覆盖 deepseek-harness、openclaw、hermes、opencode、pi、codex、claude code 等——其中五个在本系列已有专篇。读懂"怎么从别人的本地数据里可靠地收割记忆"是读这份笔记的主线。
 
@@ -14,7 +14,7 @@ Memmy 是 MemTensor（MemOS 的开发团队，本笔记另有 MemOS 专篇）出
 
 ## 它要解决什么问题
 
-同一个用户会在多个 AI 编码工具之间切换：今天用 Claude Code 写代码，明天用 Codex 重构，后天让 OpenClaw 跑自动化任务。每个工具都只记得自己会话里的事——你的偏好、项目背景、昨天做到哪，换一个工具就归零。常见的补救有两条路：给每个工具接同一个记忆后端（mem0 路线，每个接入点都要写适配）；或干脆只用一个自带记忆的工具（letta-code 路线，被单一工具锁住）。
+同一个用户会在多个 AI 编码 agent 之间切换：今天用 Claude Code 写代码，明天用 Codex 重构，后天让 OpenClaw 跑自动化任务。每个 agent 都只记得自己会话里的事——你的偏好、项目背景、昨天做到哪，换一个 agent 就归零。常见的补救有两条路：给每个 agent 接同一个记忆后端（mem0 路线，每个接入点都要写适配）；或干脆只用一个自带记忆的 agent（letta-code 路线，被单一 agent 锁住）。
 
 Memmy 的观察是：这些工具各自都会把会话历史完整持久化在本机（Claude Code 写 `~/.claude/projects/` 下的 JSONL，Codex 写 `~/.codex/sessions/` 的 rollout 文件，Cursor 和 OpenCode 各有自己的 SQLite），这些数据本身就是记忆的原材料，只是散落在各自的格式里。Memmy 把收割和共享这两件事做成一个本机服务：定期扫描各工具的本地数据、加上 hook 实时补采，统一整理进一个 SQLite 记忆库，再把检索结果注入回每个工具的提示词。另外它把"整理记忆"本身也交给一个自带 agent——历史摘要、策略归纳、世界模型抽象都是后台任务，不需要用户动手。
 
@@ -31,7 +31,7 @@ Memmy 的观察是：这些工具各自都会把会话历史完整持久化在�
 
 Memmy 的写入设计要同时回答两个问题：从哪收，以及怎么保证不收重。
 
-**从哪收：读原生数据 + hook 补采。** 每个适配器读该工具自己的本地持久层，把"用户按一次回车到拿到完整回复"切成一个轮次（turn）：
+**从哪收：读原生数据 + hook 补采。** 每个适配器读该 agent 自己的本地持久层，把"用户按一次回车到拿到完整回复"切成一个轮次（turn）：
 
 | 工具 | 数据源 | 轮次标识 |
 |---|---|---|
@@ -117,7 +117,7 @@ Memmy 存的是所有工具的会话原文，安全设计围绕"本地明文 SQL
 
 - **HTTP API**：记忆服务的完整 REST 面——会话/轮次、检索、增删、管理（导出、重载配置）、面板（`Memory/src/server/http.ts:64-101`）。
 - **memmy-memory CLI**：`init/install/health/session/turn/search/add/get/delete/raw` 十个数据与生命周期命令，全局可带 `--url/--token/--user-id/--source`；支持的 agent 清单：codex、cursor、claude、opencode、openclaw、hermes、dsh、workbuddy、pi、qwenwork（`Memory/src/cli/commands.ts:593-655`）。
-- **OpenAI 兼容 API**：`memmy serve` 在 18990 端口起一个标准 Chat Completions 服务（`App/memmy-agent/src/entrypoints/openai-like-api/server.ts:67-83`）——任何能调 OpenAI 接口的工具都能把"带 Memmy 记忆的 agent"当成一个模型用，这是比 hook 更普适的接入面。
+- **OpenAI 兼容 API**：`memmy serve` 在 18990 端口起一个标准 Chat Completions 服务（`App/memmy-agent/src/entrypoints/openai-like-api/server.ts:67-83`）——任何能调 OpenAI 接口的 agent 都能把"带 Memmy 记忆的 agent"当成一个模型用，这是比 hook 更普适的接入面。
 - **MCP**：Model Context Protocol（让模型调用外部工具的标准协议）一等公民，支持 stdio/SSE/streamableHttp 三种传输（`App/memmy-agent/src/core/agent-runtime/tools/mcp.ts:143-149`）；原生的 GUI 操控能力就是以 `open_computer_use` 这个 stdio MCP 服务接入的（`Migrations/src/migrations/v1.1.6/0001-add-open-computer-use-mcp.ts:13-15`）。
 - **工具插件**：扫描 workspace 附近 node_modules 里带 `memmyAgent.tools` 字段的包自动发现第三方工具（`tools/loader.ts:225-252`）。
 - **接入安装器**：`memmy-memory init` 往各工具的 home 写 skill 说明和标记块（claude 的 `CLAUDE.md`、codex 的 `AGENTS.md`、hermes 的 `SOUL.md` 等，`Memory/src/cli/skill-writer/index.ts:50-91`）；`install` 再装真正的 hook/plugin——Claude Code 与 Codex 挂 `UserPromptSubmit`/`Stop`/`SessionStart`/`PostCompact`/`SessionEnd` 五个事件，OpenClaw 装的是插件（注册记忆工具加监听会话事件），hermes 装 Python 插件（`Memory/src/agent-source/integration/` 下各 target）。hook 失败只写 stderr、绝不打断宿主工具的会话（`integration/templates/memmy-resume-hook.ts:391-398`）。
@@ -134,7 +134,7 @@ Memmy 自带完整的 agent 循环，这是它与其他六个记忆项目的最�
 
 ## 设计原则
 
-- **不改应用，读原生数据**。接入成本被转移到"适配器解析原生格式"这一处，接入的工具数量可以无限扩展而应用侧零改动。代价是脆弱：工具一改本地格式，适配器就要跟着改（OpenCode 已经要同时兼容 v1/v2 两代表结构）。
+- **不改应用，读原生数据**。接入成本被转移到"适配器解析原生格式"这一处，接入的 agent 数量可以无限扩展而应用侧零改动。代价是脆弱：agent 一改本地格式，适配器就要跟着改（OpenCode 已经要同时兼容 v1/v2 两代表结构）。
 - **完成证据驱动切分，不猜测**。轮次边界、完成状态都从原生字段取证，取不到证就挂起等下一轮扫描，最多等 24 小时——宁可迟到，不收半成品（`AgentSourceCore/src/source-turn.ts:82-100`）。
 - **同一事实只收一次**。确定性身份加账本裁决的 exactly-once（恰好一次）语义，让"hook 实时 + 扫描兜底"的双通道可以放心并行。
 - **本地优先，外泄面显式收窄**。全库在本机 SQLite，服务强制 loopback，遥测默认静默，脱敏在数据进入系统的第一个瞬间生效。

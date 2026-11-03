@@ -12,7 +12,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 同一个核心可以跑在四种外壳里：命令行（CLI）、Ink 终端界面、Electron 桌面应用，以及一个常驻的 gateway（网关，负责接通聊天平台的程序），通过 Telegram、Discord、Slack、WhatsApp、Signal、微信、QQ 等约 20 个平台跟它对话，而它本人在云服务器上干活。
 
-模型随便换：Nous Portal、OpenRouter、OpenAI、Anthropic、DeepSeek、自己搭的端点、AWS Bedrock 都行，一条 `hermes model` 命令切换，不被任何一家锁死。技能格式兼容 agentskills.io 开放标准；它还能批量生成对话轨迹（trajectory，一次完整任务的全部消息记录）并压缩，用来训练下一代工具调用模型，所以也是个研究工具。
+模型随便换：Nous Portal、OpenRouter、OpenAI、Anthropic、DeepSeek、自己搭的端点、AWS Bedrock 都行，一条 `hermes model` 命令切换，不被任何一家锁死。技能格式兼容 agentskills.io 开放标准；它还能批量生成对话轨迹（trajectory，一次完整任务的全部消息记录）并压缩，用来训练下一代工具调用模型，所以也有研究用途。
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 

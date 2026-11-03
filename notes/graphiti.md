@@ -21,7 +21,7 @@ graphiti 的切入点是给图谱加上完整的时间维度：每条事实（�
 ## 仓库怎么分工
 
 - `graphiti_core/`——核心库。`graphiti.py` 是编排入口（`Graphiti` 类）；`nodes.py`/`edges.py` 是数据模型；`prompts/` 是全部提示词模板；`utils/maintenance/` 是建图时的加工逻辑（节点/边抽取、消歧、失效判定、社区检测）；`search/` 是检索；`driver/` 是图数据库驱动抽象。
-- `mcp_server/`——MCP 服务端，把建图和查图暴露成十几个 MCP 工具，供 Claude Code 这类编码工具直连。
+- `mcp_server/`——MCP 服务端，把建图和查图暴露成十几个 MCP 工具，供 Claude Code 这类编码 agent 直连。
 - `server/`——REST 服务（FastAPI），提供消息摄取、检索、删除的 HTTP 接口。
 - `tests/`——集成测试和端到端评测。
 
@@ -117,7 +117,7 @@ graphiti 的切入点是给图谱加上完整的时间维度：每条事实（�
 
 ## Agent Loop
 
-没有。方法面只有建图、检索、社区、删除这些图谱操作，没有决策循环。README 原话见"它要解决什么问题"节。外部 agent（比如接了它 MCP 的编码工具）负责决定"什么时候存、什么时候查"。
+没有。方法面只有建图、检索、社区、删除这些图谱操作，没有决策循环。README 原话见"它要解决什么问题"节。外部 agent（比如接了它 MCP 的编码 agent）负责决定"什么时候存、什么时候查"。
 
 ## 设计原则
 

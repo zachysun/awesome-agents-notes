@@ -25,7 +25,7 @@ mem0 的切入点是把"记住什么"做成一个独立的存储和加工问题�
 - `mem0/`——Python 核心 SDK，发布为 `mem0ai`。记忆的存取、抽取、检索全部在这里。
 - `mem0-ts/`——TypeScript SDK，与 Python 版功能对齐，本笔记以 Python 版为准。
 - `server/`——自托管服务：一个 FastAPI（Python 的 Web 框架）应用加一个本地管理界面，把 SDK 的能力包装成 REST 接口（`server/README.md:3`）。
-- `integrations/`——面向各编码工具（Claude Code、Cursor 等）的插件，内含一个 MCP（Model Context Protocol，一个让模型调用外部工具的标准协议）服务端实现。
+- `integrations/`——面向各编码 agent（Claude Code、Cursor 等）的插件，内含一个 MCP（Model Context Protocol，一个让模型调用外部工具的标准协议）服务端实现。
 - `docs/`——文档站；`evaluation/` 目录是空的，评测框架另仓开源（`README.md:77`）。
 
 核心包内部按"可替换组件 + 一个编排者"组织。可替换组件各有基类和工厂：`mem0/llms/`（大模型）、`mem0/embeddings/`（嵌入模型）、`mem0/vector_stores/`（向量库）、`mem0/rerankers/`（重排序器）。编排者是 `mem0/memory/main.py` 里的 `Memory` 类，所有对外方法（add/search/update/delete）都在它身上，它按配置把各组件拼起来调用。
@@ -121,7 +121,7 @@ flowchart TD
 
 - **后端可插拔**：四个工厂 + `register_provider()`（见"模型接入"节）。
 - **REST 服务**：`server/` 提供完整的增删改查、检索、配置接口，带管理员鉴权和限速（`server/main.py:292-320`）。
-- **MCP**：`integrations/` 下的各工具插件共用一个 MCP 服务端实现（`integrations/agent-plugin-core/python/mcp_server.py`），只暴露一个 `search_memories` 工具——给编码工具接入时，最常用的动作就是查记忆。
+- **MCP**：`integrations/` 下面向各编码 agent 的插件共用一个 MCP 服务端实现（`integrations/agent-plugin-core/python/mcp_server.py`），只暴露一个 `search_memories` 工具——给编码 agent 接入时，最常用的动作就是查记忆。
 - **代理封装**：`mem0/proxy/` 提供一个 OpenAI 兼容的聊天接口，内部先检索记忆注入提示词、再转调模型、最后异步回写记忆（`mem0/proxy/main.py:47` 起）。应用不改代码就获得记忆能力，代价是绑定了它的调用方式。
 
 ## 可观测性与评估
