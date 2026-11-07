@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Python |
-| 笔记基准 | commit `525b1d1`（2026-10-29，v1.6.6） |
+| 笔记基准 | commit `8853378ea`（2026-11-06，v1.6.7） |
 
 Cognee 自我定位是"AI memory platform"（AI 记忆平台，`README.md:42`）：把文档、代码、对话这些原始数据加工成一张知识图谱加一套向量索引，agent 用自然语言查它，它同时用图的结构和向量的语义两种方式回答。GitHub star 约 3.3 万。知识图谱（knowledge graph）是用"节点 + 关系边"来存知识的数据结构——"张三"是一个节点，"张三 —任职于→ 某公司"是一条边；相比向量检索只能按语义相似度找文本，图谱能回答多跳关系问题（"张三的同事的负责人是谁"）。
 
 和 mem0（从对话里抽事实）不同，cognee 的输入面更宽：文档、代码仓库、结构化数据（数据库表）都在它的加工范围内，近期的开发重心也在"结构化数据入图"上。另一个差异：cognee 可以完全本地运行，不配任何 API key 也能用本地模型完成抽取（`README.md:44`）。
 
-这份笔记按问题组织，不按 cognee 的开发时间线：每个问题讲清 cognee 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `525b1d1`（2026-10-29），跟进到 commit `525b1d1`（2026-10-29）。
+这份笔记按问题组织，不按 cognee 的开发时间线：每个问题讲清 cognee 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `525b1d1`（2026-10-29），跟进到 commit `8853378ea`（2026-11-06）。
 
 ## 它要解决什么问题
 
@@ -44,11 +44,13 @@ cognee 的切入点是把"存原始数据"和"存知识"分开：原始数据先
 
 LLM（Large Language Model，大语言模型）调用统一走 litellm（一个把各家大模型 API 包装成统一接口的库），入口是 `LLMGateway`（`cognee/infrastructure/llm/LLMGateway.py`），配置是 pydantic 的 `LLMConfig`（`cognee/infrastructure/llm/config.py:74`）：提供商默认 openai，模型默认 `openai/gpt-5.6-luna`（`config.py:109-110`），支持 openai/anthropic/gemini/ollama/mistral/bedrock 等。结构化输出（让模型按指定 JSON 格式返回）默认用 litellm 原生框架，可切换 BAML（`config.py:101,152-153`）。
 
-嵌入配置单独一套（`cognee/infrastructure/databases/vector/embeddings/config.py:89`），有个贴心行为：没配 API key 时回退到本地的 fastembed 模型（同文件 `:24-28`）。配合抽取侧的降级——环境变量 `GRAPH_EXTRACTOR=auto` 时，有 key 用大模型抽实体，没 key 用本地 GLiNER 模型抽（`cognify.py:262-273`）——cognee 可以全程无 key、全 CPU 跑通，这是"Runs locally for free"卖点的实际支撑。
+嵌入配置单独一套（`cognee/infrastructure/databases/vector/embeddings/config.py:89`），有个贴心行为：没配 API key 时回退到本地的 fastembed 模型（同文件 `:24-28`）。配合抽取侧的降级——环境变量 `GRAPH_EXTRACTOR=auto` 时，有 key 用大模型抽实体，没 key 用本地 GLiNER 模型抽（`cognify.py:262-273`）——cognee 可以全程无 key、全 CPU 运行，这是"Runs locally for free"卖点的实际支撑。
 
 ## 加工管道
 
 三大入口的关系：`add()` 登记原始数据，`cognify()` 加工成记忆，`search()` 查询。
+
+add() 对数据库连接串这个入口设了默认拒绝的检查。用 `sqlite:///`、`postgresql://` 这类连接串把数据库当数据源摄入时，发起连接的是 cognee 所在的机器——能说出一个库地址的调用方，就能借它读到这台机器可达的任何库。所以未配置时按入口区分：SDK、CLI、MCP 服务端允许，API 服务端直接拒绝（错误 `DatabaseIngestionDisabled`，理由是 API 的调用者是所有能注册账号的人，`.env.template:472-482`）；环境变量 `ALLOW_DATABASE_INGESTION` 设 `true` 全部放开、设 `false` 全部拒绝（判定在 `cognee/tasks/ingestion/create_dlt_source.py:208-235`）。即便放开，指向 cognee 自己存储的连接仍会被拦下：存储根目录里的 SQLite 文件拒绝（里面是全部租户的用户、权限和数据）；携带 cognee 自己数据库用户名密码的连接串，不管 host 写什么都拒绝；目标地址解析后与 cognee 在用的数据库服务器同端口的连接也拒绝（按解析出的地址加端口比对，尽力而为）（`:132`、`:254` 起）。连接失败时客户端只拿到异常类名，驱动报错原文只进服务端日志（`:81-90`）——否则这条入口能被当成扫描器，对服务端可达的每台数据库逐个做连通测试。
 
 cognify 的主管道默认由五个任务组成一条线性链（`cognify.py:669-732`）：分块任务 → 找回索引管道已嵌入的块 → `extract_graph_and_summarize`（调模型抽实体、关系、摘要，实现在 `cognee/tasks/graph/extract_graph_and_summarize.py:15`）→ `add_data_points`（写图库和向量库）→ `record_provenance`（记录数据来源，可选）。
 
@@ -150,3 +152,4 @@ cognee 主体是数据管道，没有常驻 agent 循环。唯一的"类 agent"�
 ## 修订记录
 
 - 2026-10-30 初版：基于 commit `525b1d1` 完整成文。覆盖 add/cognify/search 三入口、线性任务链与按数据项路由、DataPoint 元数据契约、三通道混合检索、块级增量更新与分级遗忘、数据集级隔离与评测框架。
+- 2026-11-07 基于 commit `8853378ea`（v1.6.7 合并窗口）补充：数据库连接串摄入新增默认拒绝的准入检查——API 服务端默认拒绝、SDK/CLI/MCP 允许、`ALLOW_DATABASE_INGESTION` 显式控制；指向 cognee 自身存储的连接一律拒绝；驱动报错原文只留服务端日志（提交 dd5a45afe 等），补入"加工管道"节。
