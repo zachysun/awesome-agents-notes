@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `6d737b3`（2026-11-06，v0.34.43） |
+| 笔记基准 | commit `9176d8c`（2026-11-06，v0.34.44） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `6d737b3`（2026-11-06）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `9176d8c`（2026-11-06）。
 
 ## 它要解决什么问题
 
@@ -97,6 +97,8 @@ flowchart TD
 
 双后端统一在 `Backend` 接口后（`src/backend/backend.ts:193` 起），用能力位声明差异（`BackendCapabilities`：`remoteMemfs`/`localMemfs`/`promptRecompile`/`serverSecrets` 等，`:172-188`）——上层代码按能力位分支，而不是按"云还是本地"硬编码。云后端的模型调用在服务端执行；本地后端经 pi-ai 直连，BYOK 接入支持 anthropic、openai、openai-compatible、xai、zai 及 Bedrock、OpenAI 订阅接入等（`src/providers/byok-providers.ts:131-177`）。
 
+默认模型的选取有一条硬规则：`letta/` 前缀的 Letta 托管模型永远不会被隐式选为默认（`src/agent/model-catalog.ts:108-110` 注释原话 "Letta-hosted handles are never picked as an implicit default"）；默认值从模型目录里标记 `isDefault` 的条目选取，没有标记就取第一个候选，目录为空则明确处于未选择状态（`:115-122`）。模型要跑起来需要凭据：要么自己的 API key，要么 Letta credits，两者都没有时轮次会收到明确的提示与指引（`/connect` 添加 provider key 或购买 credits，`src/cli/helpers/error-formatter.ts:16-17`）。会话标题与描述这类辅助生成不占主模型，固定走单独指定的模型（`src/constants.ts:8`）。
+
 ## 持久化
 
 本地无数据库，全部是文件：记忆在每个 agent 的 git 仓库；会话转写是每会话一个 `messages.jsonl`（`src/backend/local/local-transcript.ts:90`）；agent 和会话的元数据是 JSON 文件。云后端一切在服务端，本地通过 git 代理访问记忆仓库（每轮推送到 origin，`src/agent/memory-git.ts:1905`）。用户把记忆仓库镜像到自己的 GitHub 是受支持的工作方式（post-commit 钩子实现）——记忆资产的所有权可以完全在用户手里。
@@ -116,7 +118,7 @@ flowchart TD
 
 ## 可观测性
 
-遥测默认开启、需要主动关（opt-out）：`LETTA_CODE_TELEM=0` 或 `DO_NOT_TRACK=1`（`src/telemetry/index.ts:392-405`）。上报目标是用户所连的 Letta 服务端而不是独立第三方，事件是会话起止、工具用量、错误这类元数据，明确不序列化身份内容（`:304`）。自诊入口：`/doctor`（按症状诊断）、`/palace`（记忆可视化）、`/search`（全量消息搜索，`src/cli/commands/registry.ts:139-184`）。
+遥测默认开启、需要主动关（opt-out）：`LETTA_CODE_TELEM=0` 或 `DO_NOT_TRACK=1`（`src/telemetry/index.ts:392-405`）。上报目标是用户所连的 Letta 服务端而不是独立第三方，事件是会话起止、工具用量、错误这类元数据，明确不序列化身份内容（`:304`）。外部编码 worker 对模型 API 发出的原始调用另有一条独立的捕获通道：Cloud 认证会话里，worker 的模型请求经一个本地日志代理转发，转发的请求与响应字节不变——Claude 侧把 `ANTHROPIC_BASE_URL` 指向代理（`src/tools/impl/external-llm-trace-launch.ts:15,26`），Codex 侧读取它生效的 provider 配置，再以经代理的 HTTP Responses provider 启动 app-server，ChatGPT 认证仍直连 ChatGPT 后端（`:61-75`，文档 `docs/external-agent-traces.md:27-29`）。捕获的记录不含 HTTP 头，凭据字段与已知密钥值在写入前替换为 `[REDACTED]`（`src/tools/impl/external-llm-trace-payload.ts:22,31,35`）；每条请求/响应负载上限 2 MiB，超出保留一行 `size_limit` 标记并注明省略（`:3`、文档 `:21-23`）；记录按批次上传到 `/v1/conversations/<会话id>/llm-trace`（`src/tools/impl/external-llm-trace-session.ts:47`），单批 7 MiB 或 20 行（`:105`），失败按指数退避重试至多三次（`:120`，文档 `:24`），会话级上传队列 64 MiB、超出即丢弃（`:161`、文档 `:21-22`）——尽力而为，进程终止或队列耗尽可能丢记录，不完整流标记 `incomplete`。这条通道与遥测共用开关：`LETTA_CODE_TELEM=0`、`LETTA_CODE_TELEM=false` 或 `DO_NOT_TRACK=1` 同时关闭捕获与上传（`external-llm-trace-payload.ts:8-16`、`external-llm-trace-session.ts:70-72`）；自托管与未认证会话不上传（`docs/external-agent-traces.md:9-10`）。自诊入口：`/doctor`（按症状诊断）、`/palace`（记忆可视化）、`/search`（全量消息搜索，`src/cli/commands/registry.ts:139-184`）。
 
 ## 设计原则
 
@@ -145,3 +147,4 @@ flowchart TD
 - 2026-11-04 基于 commit `b95e4a6` 补充：Task 工具启动改为三层选择——`subagent_type` 预设（含 `.letta/agents/` 自定义）优先、`harness` 选运行器（外部 worker 从 claude-code / codex 两种扩展为四种，新增 opencode 与 cursor）、`fork_context` 让 letta 子 agent 继承父会话历史（PR 5468）；补记内置内部型 subagent 名单与 memory 修复 agent，并改写"扩展机制"节 subagent 条目。
 - 2026-11-05 基于 commit `c87e149` 补充：外部 worker 支持 `fork_context`，拿到的是渲染后的父会话转写（近期消息内联 50,000 字符上限、更早的写进 worker 工作区目录，历史 JSONL 标注只读非指令并剔除推理与系统消息，PR 5469/5510）；pre-commit 校验改为只拦截本次提交触碰文件里的问题、存量问题降级为警告（PR 5499）；远程子 agent 空闲挂后台任务时通知父 agent（PR 5517）。
 - 2026-11-07 基于 commit `6d737b3` 补充：Task 工具的继承语义反转为默认——不带 `subagent_type` 时未传 `fork_context` 即继承父会话历史（内部映射 fork 型 subagent），显式传 `false` 才得到干净上下文，预设与部署已有 agent 的路径不隐式继承（PR 5564）；远程 worker 同样接受 `fork_context`、由目标机器准备历史文件，相应修正"扩展机制"节；上下文逼近上限的压缩改为可失败操作——上限断言不过时整次跳过、压缩失败不导致本轮对话失败（PR 5154），补入"上下文构造"节。
+- 2026-11-08 基于 commit `9176d8c` 补充：Cloud 认证会话里外部编码 worker 的模型 API 原始调用经本地日志代理捕获——请求响应字节不变转发、凭据脱敏、2 MiB 单条与 64 MiB 会话队列上限、批量上传 llm-trace 接口、与遥测共用开关（PR 5534），补入"可观测性"节；`letta/` 前缀托管模型不再作为隐式默认（旧默认 `letta/auto` 已废弃），模型运行要求自有 API key 或 Letta credits（PR 5579），补入"模型接入"节。
