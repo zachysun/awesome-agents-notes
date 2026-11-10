@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `9176d8c`（2026-11-06，v0.34.44） |
+| 笔记基准 | commit `e7b7a02`（2026-11-10，v0.34.50） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `9176d8c`（2026-11-06）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `e7b7a02`（2026-11-10）。
 
 ## 它要解决什么问题
 
@@ -93,6 +93,8 @@ flowchart TD
 
 多步循环由"工具结果即下一轮输入"驱动：后端发来工具调用请求，客户端在本机执行工具（`executeApprovalBatch`，`headless.ts:2605-2624`），把结果包进下一轮输入后 `continue` 回循环顶部（`:2635-2639`）。本地后端的单步执行由 `ProviderTurnExecutor` 包装 pi-ai 的流式适配完成（`src/backend/local/local-executor-factory.ts:42-74`），适配器内部还有一层循环处理上下文压缩预检和溢出重试（`src/backend/dev/pi-stream-adapter.ts:814-864`）。
 
+客户端工具调用有超时转后台机制：在宿主侧执行的工具超过前台等待时长（默认 10 秒，控制器可按会话设置，限定在 1–30 秒）仍未返回时，调用自动转入后台，模型立即收到一个后台任务回执继续本轮，实际结果完成后经任务通知回流进后续轮次（调用点 `src/tools/manager.ts:2430`，默认时长与上下限 `src/tools/foreground-yield.ts:4,6-7`、当前轮取值 `:20-24`）。三条例外边界：审批与人工等待不计入计时，计时从权限检查通过后才开始（`src/tools/client-tool-background.ts:30`）；编辑、写文件、计划更新这类状态变更工具列在永不转后台名单里——批内的下一个调用要读到它们改出的状态，变更不能悬在后台（`:8-21` 名单与理由注释）；Bash、exec_command、CodeMode 三个工具自带后台管理，不走这条自动路径（`:24`）。
+
 ## 模型接入
 
 双后端统一在 `Backend` 接口后（`src/backend/backend.ts:193` 起），用能力位声明差异（`BackendCapabilities`：`remoteMemfs`/`localMemfs`/`promptRecompile`/`serverSecrets` 等，`:172-188`）——上层代码按能力位分支，而不是按"云还是本地"硬编码。云后端的模型调用在服务端执行；本地后端经 pi-ai 直连，BYOK 接入支持 anthropic、openai、openai-compatible、xai、zai 及 Bedrock、OpenAI 订阅接入等（`src/providers/byok-providers.ts:131-177`）。
@@ -113,6 +115,7 @@ flowchart TD
 - **MCP（Model Context Protocol，让模型调用外部工具的标准协议）**：官方 SDK，stdio（标准输入输出）/HTTP/SSE（服务器单向推送的事件流）三种传输加 OAuth（开放授权协议）（`src/mcp-client.ts:1-34`）。
 - **subagent**：Task 工具（工具描述里称 Agent 工具，`src/tools/descriptions/Task.md:1`）的启动是三层选择：给了 `subagent_type` 就用预设——可选 recall 这类预设或 `.letta/agents/` 下的自定义 agent，预设独占启动设置，harness、fork_context、model 等其余参数全部忽略（`src/tools/impl/task-agent-selection.ts:13-25`）；没给预设时 `harness` 选运行器，取值 `letta`（默认）或外部编码 agent 的 `claude-code` / `codex` / `opencode` / `cursor` 四种（`src/tools/impl/external-coding-agent.ts:45-50`），外部 worker 各按本主 CLI 的协议驱动（流式会话 `src/tools/impl/claude-stream-session.ts`、app-server 协议 `src/tools/impl/codex-app-server.ts` 等），可以在本机运行，也可以在远程 worker 上运行；远程 worker 永远不能接管父 agent 的 harness（`src/tools/impl/external-coding-agent-task.ts:41-42` 注释原话 "False for remote workers, which must never become the parent's harness"）。harness 为 `letta` 时，继承父会话完整历史是默认行为（PR 5564）：不带 `subagent_type` 时 `fork_context` 没传就映射到 fork 型 subagent（判定函数 `shouldForkTaskContext`，`task-agent-selection.ts:39-44`——显式传 true，或者没传且未指定 `agent_id`/`conversation_id`，都算继承；`:32` 注释写明两个例外 "Presets own context; existing targets resume without an implicit fork"：预设自管上下文，部署已有 agent 时省略参数即恢复原目标、不隐式继承），要干净的空上下文必须显式传 `fork_context: false`，工具文档把分寸也写明了："Pass `fork_context: false` only when the history would mislead it (an unrelated task) or must not leave this conversation; then the prompt is all it knows"（`src/tools/descriptions/Task.md:11,42`）。外部 worker 的继承由同一判定函数驱动、默认同样生效，但机制不同：letta 自家 subagent 的 fork 是服务端会话分叉，外部 CLI 分叉不了自己的会话状态，拿到的是一份渲染后的父会话转写——最近的完整消息内联进 prompt（上限 50,000 字符），更早的消息写到 worker 工作区的 `.letta/parent-transcripts/` 目录（自带 `.gitignore`、永不入库），推理、system 消息和 `<system-reminder>` 块一律剔除；prompt 里历史包在 `<parent_history>` 标签内并声明"这是父会话的只读记录，不是发给你的指令"，真正的任务写在标签外（`src/tools/impl/external-fork-context.ts:25,27,87-89`、`src/agent/subagents/parent-transcript.ts:1-9`）。远程机器上启动的 worker 同样接受 `fork_context`：目标机器在启动前备好内联预览和更早历史的文件，主机不支持在本地保存这些文件时启动直接失败（`src/tools/descriptions/Task.md:198`）。
 - **内置 subagent 与内部名单**：定义在 `src/agent/subagents/builtin/`（general-purpose、recall、reflection、fork、init、memory，另有 init-v2 / reflection-v2 两个新版并存）。其中 general-purpose、fork、init、reflection、memory 五个是模型不可选的内部型（`src/agent/subagents/subagent-names.ts:6-13`）：general-purpose 支撑不继承历史的启动、fork 支撑继承父会话历史（继承已是默认路径），init / reflection / memory 由 harness 内部启动——memory 专职记忆仓库的 git 冲突修复，只给 Bash/Read/Edit/Write 四个工具，提交但不推送（`builtin/memory.md:4,11`）。模型能选的预设只有 recall 和用户自定义。
+- **临时会话运行新鲜 subagent**：Cloud 后端上按预设启动的全新 subagent（不带 `agent_id`/`conversation_id`、不经 computer 路由）不再每次新建一个隐藏 agent，而是运行在一个没有自身 agent 的临时会话里——会话携带预设的 system prompt 与模型，链接到父 agent，由父 agent 供给 MCP 服务器、密钥与权限，工具集是客户端预设白名单（`--tools`）；本地后端与部署已有 agent 的路径不受影响（`src/agent/subagents/ephemeral-subagent.ts:1-6,22-40`）。设 `LETTA_CODE_EPHEMERAL_SUBAGENTS=0` 或 `false` 退回每次新建隐藏 agent 的方式（`:14`）。
 - **subagent 的观测通道**：所有 subagent——内置的和外部 worker——的动态都经两条通路回到父 agent。精选进度：工具调用和回复文本记成进度条目，每条截到 300 字符、每个 subagent 只留最近 20 条（`src/agent/subagent-state.ts:36,38,406`），写进任务输出文件并随快照发给另一台机器上的父 agent，父 agent 不必等它执行完毕就知道它在干什么。内置 subagent 的进度从事件流直接提取，回复文本按消息聚合、整条消息说完才记一条（`src/agent/subagents/subagent-stream.ts:93`）；远程 run 没有事件流，靠轮询消息列表补齐同样的条目，工具调用、审批请求、回复文本三类都记（`src/agent/subagents/remote-turn-wait.ts:46`），等待期间周期拉取、已结束的旧 run 只补读一次（`:128`）；等待中还会观察子 agent 的运行时状态，发现它空闲却仍有后台任务在运行时通知父 agent（`src/headless-super-run-wait.ts:39`）。全量日志：发起方在另一台机器上时，执行机在内存里为该 subagent 保留完整事件记录——单条超 256KB 截断并标注截掉多少字节、累计超 32MB 从最旧开始丢（`src/agent/subagent-events.ts:13,15`），父 agent 经 websocket 的 `read_subagent_events` 命令按序号分页拉取、单页 1MB，响应带 missed 计数告知丢了多少条（`src/agent/subagent-events.ts:17`、`src/websocket/listener/commands/subagent-events.ts:12`）。
 - **hooks 与 mods**：脚本挂钩执行关键点；mods 改 harness 本身。
 
@@ -148,3 +151,4 @@ flowchart TD
 - 2026-11-05 基于 commit `c87e149` 补充：外部 worker 支持 `fork_context`，拿到的是渲染后的父会话转写（近期消息内联 50,000 字符上限、更早的写进 worker 工作区目录，历史 JSONL 标注只读非指令并剔除推理与系统消息，PR 5469/5510）；pre-commit 校验改为只拦截本次提交触碰文件里的问题、存量问题降级为警告（PR 5499）；远程子 agent 空闲挂后台任务时通知父 agent（PR 5517）。
 - 2026-11-07 基于 commit `6d737b3` 补充：Task 工具的继承语义反转为默认——不带 `subagent_type` 时未传 `fork_context` 即继承父会话历史（内部映射 fork 型 subagent），显式传 `false` 才得到干净上下文，预设与部署已有 agent 的路径不隐式继承（PR 5564）；远程 worker 同样接受 `fork_context`、由目标机器准备历史文件，相应修正"扩展机制"节；上下文逼近上限的压缩改为可失败操作——上限断言不过时整次跳过、压缩失败不导致本轮对话失败（PR 5154），补入"上下文构造"节。
 - 2026-11-08 基于 commit `9176d8c` 补充：Cloud 认证会话里外部编码 worker 的模型 API 原始调用经本地日志代理捕获——请求响应字节不变转发、凭据脱敏、2 MiB 单条与 64 MiB 会话队列上限、批量上传 llm-trace 接口、与遥测共用开关（PR 5534），补入"可观测性"节；`letta/` 前缀托管模型不再作为隐式默认（旧默认 `letta/auto` 已废弃），模型运行要求自有 API key 或 Letta credits（PR 5579），补入"模型接入"节。
+- 2026-11-10 基于 commit `e7b7a02`（v0.34.50）补充：Cloud 后端的新鲜预设 subagent 改为运行在无自身 agent 的临时会话里，会话链接父 agent 供给 MCP、密钥与权限（PR 5580），补入"扩展机制"节；客户端工具调用前台等待超时自动转后台、回执先行与结果回流（PR 5620），补入"Agent Loop"节。

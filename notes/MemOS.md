@@ -4,7 +4,7 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Python（另有 TypeScript 插件包） |
-| 笔记基准 | commit `64388b5`（2026-10-29，v2.0.33） |
+| 笔记基准 | commit `3a16e5f`（2026-11-09，v2.0.36） |
 
 MemOS 自称"记忆操作系统"（Memory Operating System），由 MemTensor 团队开源，GitHub star 约 1.2 万，有配套论文（arXiv:2507.03724）。名字取自操作系统这个比喻：记忆像系统资源一样被统一管理——申请、调度、换入换出，应用（agent）不直接操心记忆存在哪、什么时候精炼、怎么回收。README 的表述是统一 store / retrieve / manage（`README.md:43`）。
 
@@ -12,7 +12,7 @@ MemOS 自称"记忆操作系统"（Memory Operating System），由 MemTensor �
 
 另一个值得注意的连接：MemOS 的 TypeScript 插件直接适配了本笔记系列已覆盖的三个 agent 项目——deepseek-harness、openclaw、hermes-agent（`apps/` 下的 `memos-local-plugin` 等插件，近期大部分提交也在这条线上）。想给这三个 agent 接记忆后端，MemOS 是现成的一站。
 
-这份笔记按问题组织，不按 MemOS 的开发时间线：每个问题讲清 MemOS 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `64388b5`（2026-10-29），跟进到 commit `64388b5`（2026-10-29）。
+这份笔记按问题组织，不按 MemOS 的开发时间线：每个问题讲清 MemOS 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `64388b5`（2026-10-29），跟进到 commit `3a16e5f`（2026-11-09）。
 
 ## 它要解决什么问题
 
@@ -69,6 +69,8 @@ flowchart TD
 
 两类记忆的差别要记准：**默认不是图**——快速上手的示例跑的是"向量 + JSON 文件"，图形态要显式配置 `tree_text`。README 的 docker 自托管路径才默认 Neo4j + Qdrant 双件套。
 
+tree_text 的知识链路里，摘要与原料的支撑关系持久化在节点元数据里：知识摘要节点带 `knowledge_material_ids`（它引用的原料记忆 id 列表），原料记忆（RawFileMemory，从原始文件直接建出的记忆节点）带 `knowledge_summary_ids`（从它抽取出的摘要 id 列表），两个列表互为反向映像（`src/memos/memories/textual/item.py:225-232`）。这条链路上的全部维护动作都读写字段而非查询图边：检索去重直接读原料节点的摘要清单（`src/memos/memories/textual/tree_text_memory/retrieve/searcher.py:1295`）；删除节点前先把反向引用清干净（`src/memos/memories/textual/tree.py:471`）；原料节点的创建与摘要合并同步维护双向清单，旧摘要引用的原料并入新摘要（`tree.py:680,715-754`）；反馈修改记忆时跳过原料节点，判定依据就是该字段非空（`src/memos/mem_feedback/feedback.py:686-688`）。收益直接：不支持边操作的图后端也能运行 tree_text 的完整知识链路——存储、去重、删除、合并、反馈都不依赖 SUMMARY、MATERIAL 这类关系边。
+
 激活记忆（`src/memos/memories/activation/item.py:32`）是 KV 缓存形态：把若干条文本记忆拼成一段文本（`MEMORY_ASSEMBLY_TEMPLATE`），调 `build_kv_cache` 预计算成 HuggingFace 的 `DynamicCache` 张量。它只在本地模型后端生效——OpenAI 这类 API 模型收不到现成的 KV 张量，直接跳过（`core.py:314-316`）；vLLM（一个主流的开源大模型推理引擎）路径是服务端 prompt 预载。参数记忆是占位：`src/memos/memories/parametric/lora.py:1-6` 文件头明确写着 placeholder、不要当功能用，`dump` 方法写入的字面量就是 `b"Placeholder"`。论文里的"记忆注入参数"在开源实现里不存在。
 
 ## 记忆检索
@@ -122,3 +124,4 @@ Python 核心包没有接入任何第三方遥测（没有 PostHog/Sentry/OTel �
 ## 修订记录
 
 - 2026-10-30 初版：基于 commit `64388b5` 完整成文。覆盖 MemCube 四槽位、fast/fine 异步写入、冷热双写与调度换血、六路检索、冲突合并与版本链；如实记录 README 宣称与代码实现的差距（参数记忆占位、激活记忆限制、未接入的推理组件）。
+- 2026-11-10 基于 commit `3a16e5f`（v2.0.36 合并窗口）补充：tree_text 知识链路的摘要与原料支撑关系从图边改为节点元数据双向字段（`knowledge_material_ids` / `knowledge_summary_ids`），检索去重、删除清理、摘要合并、反馈排除全部读写字段，不支持边操作的图后端可运行完整知识链路（提交 1729844），补入"记忆组织与存储"节。
