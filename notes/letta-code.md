@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `e7b7a02`（2026-11-10，v0.34.50） |
+| 笔记基准 | commit `ad308cd`（2026-11-10，v0.34.51） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `e7b7a02`（2026-11-10）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `ad308cd`（2026-11-10）。
 
 ## 它要解决什么问题
 
@@ -93,7 +93,7 @@ flowchart TD
 
 多步循环由"工具结果即下一轮输入"驱动：后端发来工具调用请求，客户端在本机执行工具（`executeApprovalBatch`，`headless.ts:2605-2624`），把结果包进下一轮输入后 `continue` 回循环顶部（`:2635-2639`）。本地后端的单步执行由 `ProviderTurnExecutor` 包装 pi-ai 的流式适配完成（`src/backend/local/local-executor-factory.ts:42-74`），适配器内部还有一层循环处理上下文压缩预检和溢出重试（`src/backend/dev/pi-stream-adapter.ts:814-864`）。
 
-客户端工具调用有超时转后台机制：在宿主侧执行的工具超过前台等待时长（默认 10 秒，控制器可按会话设置，限定在 1–30 秒）仍未返回时，调用自动转入后台，模型立即收到一个后台任务回执继续本轮，实际结果完成后经任务通知回流进后续轮次（调用点 `src/tools/manager.ts:2430`，默认时长与上下限 `src/tools/foreground-yield.ts:4,6-7`、当前轮取值 `:20-24`）。三条例外边界：审批与人工等待不计入计时，计时从权限检查通过后才开始（`src/tools/client-tool-background.ts:30`）；编辑、写文件、计划更新这类状态变更工具列在永不转后台名单里——批内的下一个调用要读到它们改出的状态，变更不能悬在后台（`:8-21` 名单与理由注释）；Bash、exec_command、CodeMode 三个工具自带后台管理，不走这条自动路径（`:24`）。
+客户端工具调用有超时机制，分两层。不在名单里的工具超过前台等待时长（默认 10 秒，控制器可按会话设置，限定在 1–30 秒）仍未返回时，调用自动转入后台，模型立即收到一个后台任务回执继续本轮，实际结果完成后经任务通知回流进后续轮次（调用点 `src/tools/manager.ts:2430`，默认时长与上下限 `src/tools/foreground-yield.ts:4,6-7`、当前轮取值 `:20-24`）。名单内的状态变更工具（编辑、写文件、计划更新等——批内的下一个调用要读到它们改出的状态，变更不能悬在后台，`src/tools/client-tool-background.ts:8-23`）改走硬超时：超时即中止并以错误结果结算，挂死的调用失败而不是拖住整轮——一般工具 10 秒，EnterWorktree / ExitWorktree（执行 `git worktree add/remove`，大仓库较慢）放宽到 60 秒，AskUserQuestionAsync 在等人类回答、不设上限（常量与例外 `client-tool-background.ts:26-33`，判定 `:35-42`）；超时措辞明确提示变更可能已生效、重试前先重读文件或状态（`:44-46`）。审批与人工等待不计入转后台的计时（`:74`）；Bash、exec_command、CodeMode 三个工具自带后台管理，不走自动路径（`:24`）。
 
 ## 模型接入
 
@@ -152,3 +152,4 @@ flowchart TD
 - 2026-11-07 基于 commit `6d737b3` 补充：Task 工具的继承语义反转为默认——不带 `subagent_type` 时未传 `fork_context` 即继承父会话历史（内部映射 fork 型 subagent），显式传 `false` 才得到干净上下文，预设与部署已有 agent 的路径不隐式继承（PR 5564）；远程 worker 同样接受 `fork_context`、由目标机器准备历史文件，相应修正"扩展机制"节；上下文逼近上限的压缩改为可失败操作——上限断言不过时整次跳过、压缩失败不导致本轮对话失败（PR 5154），补入"上下文构造"节。
 - 2026-11-08 基于 commit `9176d8c` 补充：Cloud 认证会话里外部编码 worker 的模型 API 原始调用经本地日志代理捕获——请求响应字节不变转发、凭据脱敏、2 MiB 单条与 64 MiB 会话队列上限、批量上传 llm-trace 接口、与遥测共用开关（PR 5534），补入"可观测性"节；`letta/` 前缀托管模型不再作为隐式默认（旧默认 `letta/auto` 已废弃），模型运行要求自有 API key 或 Letta credits（PR 5579），补入"模型接入"节。
 - 2026-11-10 基于 commit `e7b7a02`（v0.34.50）补充：Cloud 后端的新鲜预设 subagent 改为运行在无自身 agent 的临时会话里，会话链接父 agent 供给 MCP、密钥与权限（PR 5580），补入"扩展机制"节；客户端工具调用前台等待超时自动转后台、回执先行与结果回流（PR 5620），补入"Agent Loop"节。
+- 2026-11-11 基于 commit `ad308cd`（v0.34.51）补充：永不转后台的状态变更工具加硬超时——挂死的调用中止并以错误结果结算（一般 10 秒、worktree 工具 60 秒、AskUserQuestionAsync 不设上限），相应改写"Agent Loop"节超时机制段落（PR 5642）。
