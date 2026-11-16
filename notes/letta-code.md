@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `ad308cd`（2026-11-10，v0.34.51） |
+| 笔记基准 | commit `eadef1c`（2026-11-15，v0.34.63） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `ad308cd`（2026-11-10）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `eadef1c`（2026-11-15）。
 
 ## 它要解决什么问题
 
@@ -51,9 +51,11 @@ letta-code 的记忆系统叫 MemFS（memory file system）。每个 agent 在 `
 4. 替换模板占位符——模板里没有占位符就追加到末尾（`:380-385`）；
 5. 可用技能清单以 `<available_skills>` 追加在最后（`:391-421`）。
 
-上下文的第三部分——压缩摘要——有一个保底分支（提交 `7f9d42d`，PR 5133）：完整压缩产出的摘要加保留消息仍然装不下时，压缩被判为"不可约"，此时不再让本轮失败，而是从最旧一侧按轮整体丢弃消息，直到剩余内容装得下；每一轮连同它的工具调用和结果一起消失，工具结果不会脱离调用单独存活；最近一轮用户消息始终保留，"较旧消息因压缩无法再缩小上下文而被丢弃"的警告替代摘要写入（`src/backend/local/compaction.ts:135,153`）。该分支只在上下文溢出触发压缩时启用，从最旧侧找不到可丢弃的轮次时放弃丢弃。
+上下文的第三部分——压缩摘要——有一个保底分支（提交 `7f9d42d`，PR 5133）：完整压缩产出的摘要加保留消息仍然装不下时，压缩被判为"不可约"，此时不再让本轮失败，而是从最旧一侧按轮整体丢弃消息，直到剩余内容装得下；每一轮连同它的工具调用和结果一起消失，工具结果不会脱离调用单独存活；最近一轮用户消息始终保留，"较旧消息因压缩无法再缩小上下文而被丢弃"的警告替代摘要写入（`src/backend/local/compaction.ts:178-180`，system prompt 永不逐出的说明在 `:134`）。该分支只在上下文溢出触发压缩时启用，从最旧侧找不到可丢弃的轮次时放弃丢弃。
 
-另一条触发路径——上下文逼近上限时的压缩（触发器 `context_window_limit`）——被当成可失败的操作（PR 5154）：发起摘要调用之前先断言装得下，计划保留的消息估算 token 已超阈值就直接抛错，注定失败的摘要调用根本不发起；摘要返回后再核一次，摘要加保留消息仍超阈值、或者消息数与 token 数都没有下降（压缩没有进展），同样抛错（断言实现 `src/backend/local/compaction.ts:62-72` 与 `:82-106`，调用点 `src/backend/local/local-backend.ts:808,827,862`）。错误按压缩模式区分：完整压缩抛 `LocalIrreducibleContextError`；滑动窗口模式抛规划错误，被捕获后升级为完整压缩再试（`local-backend.ts:776-778`）。完整压缩的不可约错误在这条路径上被外层包装捕获，整次压缩放弃、本轮对话照常进行——注释原话 "Pressure compaction is opportunistic: it must not fail a turn (or a completed response)"（`compaction.ts:195-206`，包装入口 `local-backend.ts:571`）。
+另一条触发路径——上下文逼近上限时的压缩（触发器 `context_window_limit`）——被当成可失败的操作（PR 5154）：发起摘要调用之前先断言装得下，计划保留的消息估算 token 已超阈值就直接抛错，注定失败的摘要调用根本不发起；摘要返回后再核一次，摘要加保留消息仍超阈值、或者消息数与 token 数都没有下降（压缩没有进展），同样抛错（断言实现 `src/backend/local/compaction.ts:88-93` 与 `:108-127`，调用点 `src/backend/local/local-backend.ts:738,766,788`）。错误按压缩模式区分：完整压缩抛 `LocalIrreducibleContextError`；滑动窗口模式抛规划错误，被捕获后升级为完整压缩再试（`local-backend.ts:698`）。完整压缩的不可约错误在这条路径上被外层包装捕获，整次压缩放弃、本轮对话照常进行——注释原话 "Pressure compaction is opportunistic: it must not fail a turn (or a completed response)"（`compaction.ts:227`，包装入口 `local-backend.ts:541`）。
+
+压缩的方式本身也成了可选配置（PR 5351）：本地后端有四种压缩模式——`all`（全量）、`sliding_window`（滑动窗口，默认，保留最近 30%）、以及两个自压缩变体 `self_compact_all` / `self_compact_sliding_window`（模式定义 `compaction.ts:46-53`，设置经会话的 `compaction_settings` 传入并校验，`compaction-settings.ts:28-33`）。选自压缩变体时，摘要请求复用 agent 自己的请求上下文：同一份 system prompt、同一套工具、完整历史，末尾追加一条合成的助手确认消息和压缩提示词作为最后的用户消息（`compaction.ts:711-733`）——模型在它平时工作的语境里做摘要，提示词也换用自压缩专用版本（基础提示词加一段自压缩说明，`:291-295`）；这个请求溢出上下文窗口或没有产出文本（比如模型去调工具了）时，回退到转写摘要（`:743-759`），转写摘要自身还有逐级截断的重试（`:785` 起）。压缩是否"真的变小"由同一组断言把关——四种模式共用上文那套守门逻辑。
 
 记忆的分层有明确的权威定义（`src/agent/prompts/letta_root_memfs.md`）：core（在上下文里）、external（按需读）、recall（全部消息历史，由 harness 自动存、不可变、永不注入——要查历史得自己调工具）、skills（程序性记忆，"怎么做某件事"的技能文件）。四层对应四种访问成本：已常驻上下文的、一次工具调用的、一次检索的、一次技能加载的。
 
@@ -89,15 +91,15 @@ flowchart TD
 
 ## Agent Loop
 
-主循环在 `src/headless.ts:2153` 的 `while (true)`：检查中断与轮数上限 → 组装输入 → `sendMessageStream` 发给后端 → 逐条处理后端返回的流式事件 → 按 `stop_reason` 分支。终止原因收敛为几种：`end_turn`（正常结束）、`cancelled`（用户中断）、`requires_approval`（等用户批准工具）、`llm_api_error`（指数退避重试）、`max_steps`（CLI 的 `--max-turns` 上限，`headless.ts:2114-2132`）。
+主循环在 `src/headless.ts:2109` 的 `while (true)`：检查中断与轮数上限 → 组装输入 → `sendMessageStream` 发给后端 → 逐条处理后端返回的流式事件 → 按 `stop_reason` 分支。终止原因收敛为几种：`end_turn`（正常结束）、`cancelled`（用户中断）、`requires_approval`（等用户批准工具）、`llm_api_error`（指数退避重试）、`max_steps`（CLI 的 `--max-turns` 上限，`headless.ts:2118-2141`，检查刻意放在新用户轮之前、审批续接不计入）。
 
-多步循环由"工具结果即下一轮输入"驱动：后端发来工具调用请求，客户端在本机执行工具（`executeApprovalBatch`，`headless.ts:2605-2624`），把结果包进下一轮输入后 `continue` 回循环顶部（`:2635-2639`）。本地后端的单步执行由 `ProviderTurnExecutor` 包装 pi-ai 的流式适配完成（`src/backend/local/local-executor-factory.ts:42-74`），适配器内部还有一层循环处理上下文压缩预检和溢出重试（`src/backend/dev/pi-stream-adapter.ts:814-864`）。
+多步循环由"工具结果即下一轮输入"驱动：后端发来工具调用请求，客户端在本机执行工具（`executeApprovalBatch`，`headless.ts:2557-2568`），把结果包进下一轮输入后 `continue` 回循环顶部（`:2641`）。本地后端的单步执行由 `ProviderTurnExecutor` 包装 pi-ai 的流式适配完成（`src/backend/local/local-executor-factory.ts:42-74`），适配器内部还有一层循环处理上下文压缩预检和溢出重试（`src/backend/dev/pi-stream-adapter.ts:682` 起）。
 
 客户端工具调用有超时机制，分两层。不在名单里的工具超过前台等待时长（默认 10 秒，控制器可按会话设置，限定在 1–30 秒）仍未返回时，调用自动转入后台，模型立即收到一个后台任务回执继续本轮，实际结果完成后经任务通知回流进后续轮次（调用点 `src/tools/manager.ts:2430`，默认时长与上下限 `src/tools/foreground-yield.ts:4,6-7`、当前轮取值 `:20-24`）。名单内的状态变更工具（编辑、写文件、计划更新等——批内的下一个调用要读到它们改出的状态，变更不能悬在后台，`src/tools/client-tool-background.ts:8-23`）改走硬超时：超时即中止并以错误结果结算，挂死的调用失败而不是拖住整轮——一般工具 10 秒，EnterWorktree / ExitWorktree（执行 `git worktree add/remove`，大仓库较慢）放宽到 60 秒，AskUserQuestionAsync 在等人类回答、不设上限（常量与例外 `client-tool-background.ts:26-33`，判定 `:35-42`）；超时措辞明确提示变更可能已生效、重试前先重读文件或状态（`:44-46`）。审批与人工等待不计入转后台的计时（`:74`）；Bash、exec_command、CodeMode 三个工具自带后台管理，不走自动路径（`:24`）。
 
 ## 模型接入
 
-双后端统一在 `Backend` 接口后（`src/backend/backend.ts:193` 起），用能力位声明差异（`BackendCapabilities`：`remoteMemfs`/`localMemfs`/`promptRecompile`/`serverSecrets` 等，`:172-188`）——上层代码按能力位分支，而不是按"云还是本地"硬编码。云后端的模型调用在服务端执行；本地后端经 pi-ai 直连，BYOK 接入支持 anthropic、openai、openai-compatible、xai、zai 及 Bedrock、OpenAI 订阅接入等（`src/providers/byok-providers.ts:131-177`）。
+双后端统一在 `Backend` 接口后（`src/backend/backend.ts:195` 起），用能力位声明差异（`BackendCapabilities`：`remoteMemfs`/`localMemfs`/`promptRecompile`/`serverSecrets` 等，`:174-193`）——上层代码按能力位分支，而不是按"云还是本地"硬编码。云后端的模型调用在服务端执行；本地后端经 pi-ai 直连，BYOK 接入支持 anthropic、openai、openai-compatible、xai、zai 及 Bedrock、OpenAI 订阅接入等（`src/providers/byok-providers.ts:131-177`）。
 
 默认模型的选取有一条硬规则：`letta/` 前缀的 Letta 托管模型永远不会被隐式选为默认（`src/agent/model-catalog.ts:108-110` 注释原话 "Letta-hosted handles are never picked as an implicit default"）；默认值从模型目录里标记 `isDefault` 的条目选取，没有标记就取第一个候选，目录为空则明确处于未选择状态（`:115-122`）。模型要跑起来需要凭据：要么自己的 API key，要么 Letta credits，两者都没有时轮次会收到明确的提示与指引（`/connect` 添加 provider key 或购买 credits，`src/cli/helpers/error-formatter.ts:16-17`）。会话标题与描述这类辅助生成不占主模型，固定走单独指定的模型（`src/constants.ts:8`）。
 
@@ -138,7 +140,7 @@ flowchart TD
 - **后台整理走 worktree + 提交契约**（`reflection-prompt.ts:15-28`）：让 subagent 批量修改共享状态时，给它一个平行工作区和"你只管提交、合并我来"的契约，主流程永远不暴露在半完成状态上。
 - **按需加载的分层记忆**（core/external/recall/skills 四层）：上下文装不下的记忆不是全压缩，而是分层——常驻的、一次工具调用的、一次检索的、一次技能加载的，按访问频率分配成本。
 - **前置校验挂 git 钩子**（`memory-git-hooks.ts:38-184`）：约束"agent 生成的内容"（必填字段、保护字段）放在提交时刻而不是读取时刻，坏数据进不了历史。
-- **能力位统一多后端**（`backend.ts:172-188`）：产品有云/本地双形态时，把差异声明为能力位集合，上层按能力分支，避免满天飞的部署模式判断。
+- **能力位统一多后端**（`backend.ts:174-193`）：产品有云/本地双形态时，把差异声明为能力位集合，上层按能力分支，避免满天飞的部署模式判断。
 
 ## 修订记录
 
@@ -153,3 +155,4 @@ flowchart TD
 - 2026-11-08 基于 commit `9176d8c` 补充：Cloud 认证会话里外部编码 worker 的模型 API 原始调用经本地日志代理捕获——请求响应字节不变转发、凭据脱敏、2 MiB 单条与 64 MiB 会话队列上限、批量上传 llm-trace 接口、与遥测共用开关（PR 5534），补入"可观测性"节；`letta/` 前缀托管模型不再作为隐式默认（旧默认 `letta/auto` 已废弃），模型运行要求自有 API key 或 Letta credits（PR 5579），补入"模型接入"节。
 - 2026-11-10 基于 commit `e7b7a02`（v0.34.50）补充：Cloud 后端的新鲜预设 subagent 改为运行在无自身 agent 的临时会话里，会话链接父 agent 供给 MCP、密钥与权限（PR 5580），补入"扩展机制"节；客户端工具调用前台等待超时自动转后台、回执先行与结果回流（PR 5620），补入"Agent Loop"节。
 - 2026-11-11 基于 commit `ad308cd`（v0.34.51）补充：永不转后台的状态变更工具加硬超时——挂死的调用中止并以错误结果结算（一般 10 秒、worktree 工具 60 秒、AskUserQuestionAsync 不设上限），相应改写"Agent Loop"节超时机制段落（PR 5642）。
+- 2026-11-16 基于 commit `eadef1c`（v0.34.63，窗口含 PR 5351 系列）补充：本地后端压缩新增模式设置——`all` / `sliding_window`（默认）之外多了 `self_compact_all` / `self_compact_sliding_window` 两个自压缩变体，摘要请求复用 agent 自己的请求上下文（同 system prompt、同工具、完整历史）执行，溢出或无产出时回退转写摘要，补入"上下文构造"节。全篇行号引用按新代码核对更新（压缩、主循环、适配器循环、后端接口）。

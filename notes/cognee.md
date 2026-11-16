@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Python |
-| 笔记基准 | commit `8853378ea`（2026-11-06，v1.6.7） |
+| 笔记基准 | commit `4053f6cc5`（2026-11-13，v1.6.8） |
 
 Cognee 自我定位是"AI memory platform"（AI 记忆平台，`README.md:42`）：把文档、代码、对话这些原始数据加工成一张知识图谱加一套向量索引，agent 用自然语言查它，它同时用图的结构和向量的语义两种方式回答。GitHub star 约 3.3 万。知识图谱（knowledge graph）是用"节点 + 关系边"来存知识的数据结构——"张三"是一个节点，"张三 —任职于→ 某公司"是一条边；相比向量检索只能按语义相似度找文本，图谱能回答多跳关系问题（"张三的同事的负责人是谁"）。
 
 和 mem0（从对话里抽事实）不同，cognee 的输入面更宽：文档、代码仓库、结构化数据（数据库表）都在它的加工范围内，近期的开发重心也在"结构化数据入图"上。另一个差异：cognee 可以完全本地运行，不配任何 API key 也能用本地模型完成抽取（`README.md:44`）。
 
-这份笔记按问题组织，不按 cognee 的开发时间线：每个问题讲清 cognee 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `525b1d1`（2026-10-29），跟进到 commit `8853378ea`（2026-11-06）。
+这份笔记按问题组织，不按 cognee 的开发时间线：每个问题讲清 cognee 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `525b1d1`（2026-10-29），跟进到 commit `4053f6cc5`（2026-11-13）。
 
 ## 它要解决什么问题
 
@@ -44,22 +44,24 @@ cognee 的切入点是把"存原始数据"和"存知识"分开：原始数据先
 
 LLM（Large Language Model，大语言模型）调用统一走 litellm（一个把各家大模型 API 包装成统一接口的库），入口是 `LLMGateway`（`cognee/infrastructure/llm/LLMGateway.py`），配置是 pydantic 的 `LLMConfig`（`cognee/infrastructure/llm/config.py:74`）：提供商默认 openai，模型默认 `openai/gpt-5.6-luna`（`config.py:109-110`），支持 openai/anthropic/gemini/ollama/mistral/bedrock 等。结构化输出（让模型按指定 JSON 格式返回）默认用 litellm 原生框架，可切换 BAML（`config.py:101,152-153`）。
 
-嵌入配置单独一套（`cognee/infrastructure/databases/vector/embeddings/config.py:89`），有个贴心行为：没配 API key 时回退到本地的 fastembed 模型（同文件 `:24-28`）。配合抽取侧的降级——环境变量 `GRAPH_EXTRACTOR=auto` 时，有 key 用大模型抽实体，没 key 用本地 GLiNER 模型抽（`cognify.py:262-273`）——cognee 可以全程无 key、全 CPU 运行，这是"Runs locally for free"卖点的实际支撑。
+嵌入配置单独一套（`cognee/infrastructure/databases/vector/embeddings/config.py:93`），有个贴心行为：没配 API key 时回退到本地的 fastembed 模型（默认本地模型是 bge-small，同文件 `:29-40`）。配合抽取侧的降级——cognify 的 `extractor` 参数默认 `auto`，解析规则是有可用的 LLM key 走大模型抽实体，没有就用本地 GLiNER 演示模型（解析调用在 `cognify.py:384`）——cognee 可以全程无 key、全 CPU 运行，这是"Runs locally for free"卖点的实际支撑。
 
 ## 加工管道
 
-三大入口的关系：`add()` 登记原始数据，`cognify()` 加工成记忆，`search()` 查询。
+三大入口的关系：`add()` 登记原始数据，`cognify()` 加工成记忆，`search()` 查询。表格类数据源（数据库连接串、CSV 文件）有一组专属加工选项——主键、写入策略、单表行数上限这类——集中在 `dlt_config` 参数里，HTTP 端点 POST /add 现在也接受这个参数（此前只有 SDK 调用能传，`add.py:51`）。
 
-add() 对数据库连接串这个入口设了默认拒绝的检查。用 `sqlite:///`、`postgresql://` 这类连接串把数据库当数据源摄入时，发起连接的是 cognee 所在的机器——能说出一个库地址的调用方，就能借它读到这台机器可达的任何库。所以未配置时按入口区分：SDK、CLI、MCP 服务端允许，API 服务端直接拒绝（错误 `DatabaseIngestionDisabled`，理由是 API 的调用者是所有能注册账号的人，`.env.template:472-482`）；环境变量 `ALLOW_DATABASE_INGESTION` 设 `true` 全部放开、设 `false` 全部拒绝（判定在 `cognee/tasks/ingestion/create_dlt_source.py:208-235`）。即便放开，指向 cognee 自己存储的连接仍会被拦下：存储根目录里的 SQLite 文件拒绝（里面是全部租户的用户、权限和数据）；携带 cognee 自己数据库用户名密码的连接串，不管 host 写什么都拒绝；目标地址解析后与 cognee 在用的数据库服务器同端口的连接也拒绝（按解析出的地址加端口比对，尽力而为）（`:132`、`:254` 起）。连接失败时客户端只拿到异常类名，驱动报错原文只进服务端日志（`:81-90`）——否则这条入口能被当成扫描器，对服务端可达的每台数据库逐个做连通测试。
+add() 对数据库连接串这个入口设了默认拒绝的检查。用 `sqlite:///`、`postgresql://` 这类连接串把数据库当数据源摄入时，发起连接的是 cognee 所在的机器——能说出一个库地址的调用方，就能借它读到这台机器可达的任何库。所以未配置时按入口区分：SDK、CLI、MCP 服务端允许，API 服务端直接拒绝（错误 `DatabaseIngestionDisabled`，理由是 API 的调用者是所有能注册账号的人，`.env.template:505`）；环境变量 `ALLOW_DATABASE_INGESTION` 设 `true` 全部放开、设 `false` 全部拒绝（判定在 `cognee/tasks/ingestion/create_dlt_source.py:209`）。即便放开，指向 cognee 自己存储的连接仍会被拦下：存储根目录里的 SQLite 文件拒绝（里面是全部租户的用户、权限和数据）；携带 cognee 自己数据库用户名密码的连接串，不管 host 写什么都拒绝；目标地址解析后与 cognee 在用的数据库服务器同端口的连接也拒绝（按解析出的地址加端口比对，尽力而为）（`:133`、`:259` 起）。连接失败时客户端只拿到异常类名，驱动报错原文只进服务端日志（`:82-90`）——否则这条入口能被当成扫描器，对服务端可达的每台数据库逐个做连通测试。
 
-cognify 的主管道默认由五个任务组成一条线性链（`cognify.py:669-732`）：分块任务 → 找回索引管道已嵌入的块 → `extract_graph_and_summarize`（调模型抽实体、关系、摘要，实现在 `cognee/tasks/graph/extract_graph_and_summarize.py:15`）→ `add_data_points`（写图库和向量库）→ `record_provenance`（记录数据来源，可选）。
+cognify 的主管道默认由一条线性链组成（`cognify.py:679-737`）：分块任务 → 找回索引管道已嵌入的块（`early_chunk_indexing` 开启时）→ `extract_graph_and_summarize`（调模型抽实体、关系、摘要，实现在 `cognee/tasks/graph/extract_graph_and_summarize.py:15`）→ `add_data_points`（写图库和向量库）。来源审计从这条链上拿掉了：数据项审计表改在 `add_data_points` 落库成功后写入（`cognify.py:735` 的注释写明缘由），挂在所有写入方共用的落库步骤上，自定义管道和代码图路径也能覆盖。
 
 任务编排有两个要点：
 
 - **线性链，不是任务图**。`Task` 类（`cognee/modules/pipelines/tasks/task.py:188`）把函数包装成可批处理、可标注"是否需要 LLM"（`needs_llm`，用于无 key 场景的预检）的执行单元；上一步的输出就是下一步的输入（`cognee/modules/pipelines/operations/run_pipeline.py:37-100`）。没有分支、没有依赖解析——流程的灵活性靠"换任务列表"实现，不靠调度器。
 - **按数据项路由**。同一条管道里，每个数据项先被分类到 STANDARD（普通文档）/ DLT_SOURCE（结构化数据）/ CODE / CODE_REPO 四条路由之一（`cognify.py:559-581`），各自用不同的任务组合。一份混合批次里，表格数据不会浪费模型调用去"抽取实体"——它的结构本来就是图（外键即关系边，近期的 SQL 外键解析特性）。
 
-管道运行状态记录在关系库的 `PipelineRun` 表（`cognee/modules/pipelines/models/PipelineRun.py:36`），每个数据项在每个管道的完成状态记在 `Data.pipeline_status` 槽位里（`cognee/modules/pipelines/models/DataItemStatus.py:12-37`）。重跑 cognify 时，已完成的数据项默认跳过（增量执行，`incremental_loading` 默认开，`add.py:50`）。
+管道运行状态记录在关系库的 `PipelineRun` 表（`cognee/modules/pipelines/models/PipelineRun.py:36`），每个数据项在每个管道的完成状态记在 `Data.pipeline_status` 槽位里（`cognee/modules/pipelines/models/DataItemStatus.py:12-37`）。重跑 cognify 时，已完成的数据项默认跳过（增量执行，`incremental_loading` 默认开，`add.py:52`）。
+
+来源审计是一套独立开启的子系统：数据项审计表（audit ledger）。环境变量 `PROVENANCE_TRACKING` 打开（默认关，挂在 `CognifyConfig.provenance_tracking` 上，`cognee/modules/provenance/tracking.py:3`）后，每个数据项在落库成功时记一行：键是 `{数据集 id}:data_item:{数据 id}`，值含内容哈希、操作者、管道运行与来源引用键（写入点 `cognee/tasks/provenance/record_provenance.py:50`）。设计上有四个要点。第一，只记数据项、不记节点和边——哪个节点哪条边来自哪个数据项，图上的 source ref 已经记录了，逐节点记录会让共享关系库膨胀约十倍（模块说明 `record_provenance.py:1-19`）。第二，审计表是带哈希链的追加式表（`cognee/modules/provenance/storage.py:1-13`）：并发追加靠进程内锁、Postgres 顾问锁、序列号唯一索引三层防护，竞态失败只会得到唯一索引冲突，哈希链不会分叉。第三，失败处理选了硬失败路线：审计表写不进去时，落库任务一起失败、整趟运行回滚——存储成功但审计缺失的状态没有任何机制能补报，所以宁可让运行失败（`record_provenance.py` 模块说明）。开关关闭时同样干脆：读取审计表直接报错而不是返回空（`tracking.py:26-31`），避免"以为有审计记录其实没有"。第四，审计行跟随数据项的生命周期：内容哈希变化记为版本更新（更新内容发布后才记新哈希）；删除数据项打墓碑标记（`cognee/modules/provenance/tombstones.py:119`），`forget(memory_only=True)` 只删记忆不动审计表，之后重新写入同一数据项会让审计行恢复。审计表自带的命令行读取入口受访问控制保护（提交 607792c82）。
 
 ```mermaid
 flowchart TD
@@ -77,9 +79,9 @@ flowchart TD
 
 ## 存储模型
 
-三类后端各司其职：图库存图谱、向量库存嵌入、关系库存用户/数据集/管道状态等元数据。默认组合是 ladybug（嵌入式图库）+ LanceDB（嵌入式向量库）+ SQLite（`cognee/infrastructure/databases/graph/config.py:47`、`vector/config.py:32`、`relational/config.py:22`）——三者都默认本地嵌入式，开箱零部署。Neo4j、pgvector、Kuzu 等都有适配器，通过各自的工厂函数创建；还有一张 `supported_databases` 注册表（`cognee/infrastructure/databases/graph/supported_databases.py:1`）允许外部注册自定义适配器。注意默认图库是 ladybug——网上旧文写的"默认 networkx"已失效，networkx 适配器已删除（只剩枚举遗留，`cognee/shared/data_models.py:337-341`）。
+三类后端各司其职：图库存图谱、向量库存嵌入、关系库存用户/数据集/管道状态等元数据。默认组合是 ladybug（嵌入式图库）+ LanceDB（嵌入式向量库）+ SQLite（`cognee/infrastructure/databases/graph/config.py:47`、`vector/config.py:32`、`relational/config.py:11`）——三者都默认本地嵌入式，开箱零部署。Neo4j、pgvector、Kuzu 等都有适配器，通过各自的工厂函数创建；还有一张 `supported_databases` 注册表（`cognee/infrastructure/databases/graph/supported_databases.py:1`）允许外部注册自定义适配器。注意默认图库是 ladybug——网上旧文写的"默认 networkx"已失效，networkx 适配器连同枚举遗留已全部删除。
 
-图谱的数据模型分两层。模型抽取层：大模型按 pydantic 模型 `KnowledgeGraph`（节点列表 + 边列表，`cognee/shared/data_models.py:73-77`）返回抽取结果；你也可以传入自定义的 `graph_model`（cognify 的参数，`cognify.py:219`），让模型按你的本体（ontology，预先定义的节点类型和关系类型体系）抽取。存储层：真正入库的是 `DataPoint` 的子类，如 `Entity`、`EntityType`、`EdgeType`。
+图谱的数据模型分两层。模型抽取层：大模型按 pydantic 模型 `KnowledgeGraph`（节点列表 + 边列表，`cognee/shared/data_models.py:73-77`）返回抽取结果；你也可以传入自定义的 `graph_model`（cognify 的参数，`cognify.py:140`），让模型按你的本体（ontology，预先定义的节点类型和关系类型体系）抽取。存储层：真正入库的是 `DataPoint` 的子类，如 `Entity`、`EntityType`、`EdgeType`。
 
 `DataPoint` 基类（`cognee/infrastructure/engine/models/DataPoint.py:28`）是 cognee 最值得研究的一个设计，三个类属性决定了数据的一生：
 
@@ -89,23 +91,23 @@ flowchart TD
 
 也就是说，"怎么去重"不是写入时的一个判断步骤，而是数据建模时的一个声明。代价是建模要想清楚哪些字段构成身份——身份字段选错，该合并的不合并。
 
-本体解析默认用 RDFLib 读 OWL 文件（一种标准本体格式）加模糊匹配（`cognee/modules/ontology/object_to_model/get_default_ontology_resolver.py:16-17`）：模型抽出来的实体类型若与本体里的类型相近（模糊匹配上），按本体的类型入库。不传本体文件时这一层等于透明。
+本体解析默认用 RDFLib 读 OWL 文件（一种标准本体格式）加模糊匹配（`cognee/modules/ontology/get_default_ontology_resolver.py:33`）：模型抽出来的实体类型若与本体里的类型相近（模糊匹配上），按本体的类型入库。不传本体文件时这一层等于透明。
 
 ## 记忆检索
 
-`search()`（`cognee/api/v1/search/search.py:42`）的分发链路：权限过滤（只查你有读权限的数据集，`cognee/modules/search/methods/search.py:246-248`）→ 未指定数据集时先做数据集路由（`:319-379`）→ 每个数据集切换到它自己的数据库上下文并发查询（`:441-446`）→ 按查询类型分发给对应检索器（注册表在 `cognee/modules/retrieval/get_search_type_retriever_instance.py:133-395`）。
+`search()`（`cognee/api/v1/search/search.py:43`）的分发链路：权限过滤（只查你有读权限的数据集，`cognee/modules/search/methods/search.py:249`）→ 未指定数据集时先做数据集路由（`:318-380`）→ 每个数据集切换到它自己的数据库上下文并发查询（`:459`）→ 按查询类型分发给对应检索器（注册表在 `cognee/modules/search/methods/get_search_type_retriever_instance.py:88`）。路由有一个例外：CODE 查询不参与路由，始终在全部可读数据集上执行（`:341`）——代码数据集没有可供路由的文本块，路由表里不会有它的行，把 CODE 查询路由到"相似"的其他数据集只会得到空结果。
 
 查询类型（`SearchType` 枚举，`cognee/modules/search/types/SearchType.py:5-28`）有近二十种，常用的几类：CHUNKS（纯向量找原文块，不调模型）、SUMMARIES（找摘要）、GRAPH_COMPLETION（图谱检索后让模型基于三元组回答）、HYBRID_COMPLETION（默认类型，三通道混合）。旧教程里的 INSIGHTS 类型已删除。
 
-默认的混合检索（`cognee/modules/retrieval/hybrid_retriever.py:59`）并发跑三条通道：chunk 通道（向量搜文本块和摘要）、entity 通道（向量搜实体，命中后从图里取邻接边，`:219-247`）、fact 通道（搜关系名称的嵌入，`:229-239`）。候选合并后交给模型生成回答；空上下文直接不调模型（`:323-330`）。两个使用注意：每条通道的 top_k 上限是 10（`hybrid_retriever.py:56`），传更大的 top_k 不会生效；HYBRID 在某些条件下会自动退化为 GRAPH_COMPLETION（`search.py:92-94`），解析返回结果前先确认实际的查询类型。
+默认的混合检索（`cognee/modules/retrieval/hybrid_retriever.py:67`）按通道并发取候选再合并：chunk 通道（向量搜文本块和摘要，实现在 `retrieval/hybrid/chunks.py`）、entity 通道（向量搜实体，命中后从图里取邻接边，`hybrid/entities.py`）、fact 通道（搜关系名称的嵌入，`hybrid/facts.py`），外加一路可选的全局上下文索引通道（构造参数 `global_context_index_top_k`，`hybrid_retriever.py:86`）。每条通道的候选数量是独立的构造参数，默认各 5（`hybrid_retriever.py:80-96`）。空库与空结果分两层处理：图库为空直接抛 `NoDataError`——默认查询类型面对一个新装的空系统应该报"没数据"，而不是安静地返回一包空通道（`:135-141`）；通道全空时跳过模型调用，不硬答（`:74`）。HYBRID 在某些条件下会自动退化为 GRAPH_COMPLETION（`api/v1/search/search.py:91-93`），解析返回结果前先确认实际的查询类型。
 
 ## 更新与遗忘
 
 cognee 对"改数据"的态度比多数同类项目谨慎：
 
-- **add 拒绝静默覆盖**：同路径但内容不同的文档，add 直接抛 `DocumentUpdateRequiredError`（`add.py:73-77`）——想更新就走 update，不允许"重新 add 一遍"把旧记忆变成无人引用的残留记录。
-- **update 做块级增量**：文档 id 永不变化，默认 `chunk_level_diff=True` 只替换被编辑触及的文本块，没被碰到的块的实体、关系、摘要全部保留（`cognee/api/v1/update/update.py:43-52,117-121`）——改一段话不需要把整份文档重新加工一遍。前置条件不满足时回退为全量重建。
-- **forget 统一五种遗忘**（`cognee/api/v1/forget/forget.py:23`）：按数据 id、按数据集、全库、`memory_only`（只删图谱和向量、保留原始文件，便于以后重新 cognify）、`clean_history`（连加工历史一起清）。有个诚实的说明：向量库 LanceDB 是追加式存储，删除操作释放空间要等它后台压缩（`:96-101`）——删了的记忆立刻查不到，但磁盘空间不是立刻回收。
+- **add 拒绝静默覆盖**：同路径但内容不同的文档，add 直接抛 `DocumentUpdateRequiredError`（抛出点 `cognee/tasks/ingestion/refuse_changed_existing_documents.py:132`）——想更新就走 update，不允许"重新 add 一遍"把旧记忆变成无人引用的残留记录。
+- **update 做块级增量**：文档 id 永不变化，默认 `chunk_level_diff=True` 只替换被编辑触及的文本块，没被碰到的块的实体、关系、摘要全部保留（`cognee/api/v1/update/update.py:41-52`）——改一段话不需要把整份文档重新加工一遍。前置条件不满足时回退为全量重建。被替换下来的存储文件也不再堆积：更新路径会把已没有任何文档指向的存储文件删掉（`cognee/modules/data/methods/remove_unreferenced_files.py:21`），每次并发删除 16 个（宽度限制，让大重建不至于把存储线程池占满）；用户放在数据根目录之外的自己的文件不动，别的操作暂存、还没提交行引用的文件有声明机制保护（`stored_file_claims`）；删不掉的文件不会静默留在磁盘上——所有失败收集齐了一并抛 `StoredFileNotRemovedError`，没有任何调用方捕获它（`update/incremental.py:542-560`）。
+- **forget 统一五种遗忘**（`cognee/api/v1/forget/forget.py:36`）：按数据 id、按数据集、全库、`memory_only`（只删图谱和向量、保留原始文件，便于以后重新 cognify）、`clean_history`（连加工历史一起清）。有个诚实的说明：向量库 LanceDB 是追加式存储，删除操作释放空间要等它后台压缩（`:108`）——删了的记忆立刻查不到，但磁盘空间不是立刻回收。
 - **冲突解决是新方向**：`FactConflict` 模型（`cognee/modules/engine/models/FactConflict.py`）加 `api/v1/conflicts/` 接口，把"两个数据源说矛盾的话"显式建模成可查询、可裁决的记录，而不是静默覆盖。这是近期开发的两条主线之一。
 
 ## 隔离与多租户
@@ -114,18 +116,18 @@ cognee 有一套完整的权限模型：用户、租户（tenant）、角色、�
 
 ## 持久化与恢复
 
-原始文件存文件层（本地或 S3，`cognee/infrastructure/files/storage/`）；元数据和状态存 SQLite（或 Postgres）；数据库结构变更由 alembic 迁移管理，add 和 cognify 前强制先跑迁移（`add.py:299-301`）。管道崩溃后的恢复路径：数据项级状态槽让重跑自动跳过已完成的项；原始数据一直在文件层，任何一步加工损坏都可以从"重新 cognify"恢复，不用重新上传。会话缓存可选 SQLite/Redis 等（`cognee/infrastructure/databases/cache/config.py:10-22`）。
+原始文件存文件层（本地或 S3，`cognee/infrastructure/files/storage/`）；元数据和状态存 SQLite（或 Postgres）；数据库结构变更由 alembic 迁移管理，add 和 cognify 前强制先跑迁移（`add.py:320-322`）。管道崩溃后的恢复路径：数据项级状态槽让重跑自动跳过已完成的项；原始数据一直在文件层，任何一步加工损坏都可以从"重新 cognify"恢复，不用重新上传。会话缓存可选 SQLite/Redis 等（`cognee/infrastructure/databases/cache/config.py:10-22`）。
 
 ## 扩展机制
 
 - **自定义加工管道**：`Task(fn)` 直接包函数，或用 `@task` 装饰器（`task.py:124-157`），然后 `run_pipeline([自己的任务链])`。自定义 `graph_model`、自定义分块器、传入本体文件，都能改抽取行为而不碰框架代码。
-- **自定义后端**：`supported_databases` 注册表挂自定义适配器（图和向量两侧都有对应的注册查询点，`create_vector_engine.py:326`）。
+- **自定义后端**：`supported_databases` 注册表挂自定义适配器（图和向量两侧都有对应的注册查询点，`create_vector_engine.py:169`）。
 - **自定义检索器**：`cognee/modules/retrieval/register_retriever.py` 注册后即可作为新的 SearchType 使用。
 - **MCP**：`cognee-mcp/` 包暴露 remember / recall / forget / improve / cognify_status 等工具（`cognee-mcp/src/server.py` 内多处），agent 通过 MCP 用 cognee 当记忆后端。
 
 ## 可观测性与评估
 
-遥测是自建的 HTTP 上报（不是常见的第三方分析服务），事件批量发到项目方的收集端点（`cognee/shared/utils.py:23`），身份用 API key 派生的伪匿名 id（`:431-460`），敏感属性有清洗表（`:131`）。近期新增了 OpenTelemetry 风格的 span 层（`cognee/modules/observability`），在 add/cognify/search 三个入口埋点（span 名 `memory.store`/`memory.process`/`memory.retrieve`）。
+遥测是自建的 HTTP 上报（不是常见的第三方分析服务），事件批量发到项目方的收集端点（`cognee/shared/utils.py:23`），身份用 API key 加盐派生的伪匿名 id（盐与迭代参数在 `utils.py:27-29`），敏感属性有清洗表（`:131`）。近期新增了 OpenTelemetry 风格的 span 层（`cognee/modules/observability`），在 add/cognify/search 三个入口埋点（span 名 `memory.store`/`memory.process`/`memory.retrieve`）。
 
 评测框架内置在 `cognee/eval_framework/`：语料构建 → 问答 → 评分 → 面板四步，接 DeepEval 评分引擎，带 LoCoMo（一个长对话记忆基准）适配和检索器对比扫描工具。重依赖放可选依赖组里，核心包不引入。
 
@@ -146,10 +148,12 @@ cognee 主体是数据管道，没有常驻 agent 循环。唯一的"类 agent"�
 - **两阶段加工**（先无模型索引、后模型精加工，`cognify.py:187-205`）：任何"重加工"系统都可以先交付一个便宜的可用版本（原文可搜），昂贵加工异步补上，且两者共享嵌入结果不重复花钱。
 - **按数据类型路由加工方式**（`cognify.py:559-581`）：混合数据源的系统里，结构化数据走规则、非结构化走模型，各走各的性价比最优路径，而不是一刀切全喂模型。
 - **数据集级数据库上下文切换**（`search.py:441-446`）：多租户隔离不必每个租户一套部署，在调用层切换"当前操作的库"也能做到物理隔离，代价是并发下要小心上下文污染。
-- **拒绝静默覆盖**（`add.py:73-77`）：允许"同名重新写入"的系统几乎都会积累出无人记得的旧版本残留；报错强制走显式更新通道，是把一致性问题暴露在写入时刻而不是排查时刻。
+- **拒绝静默覆盖**（`cognee/tasks/ingestion/refuse_changed_existing_documents.py:132`）：允许"同名重新写入"的系统几乎都会积累出无人记得的旧版本残留；报错强制走显式更新通道，是把一致性问题暴露在写入时刻而不是排查时刻。
+- **带哈希链的追加式审计表**（`cognee/modules/provenance/storage.py:1-13`）：需要"谁在什么时候动了什么"的可靠记录时，用序列号唯一索引加哈希链让每条记录锚定前一条，篡改任何一行都会让后续链条断裂；并发安全用进程内锁加数据库级顾问锁双保险。审计类存储的通用做法。
 - **记忆冲突显式建模**（`FactConflict`）：两条来源矛盾的记忆不静默丢弃任何一条，而是生成一条"冲突"记录交给上层裁决——适合对答案可信度有要求的场景。
 
 ## 修订记录
 
 - 2026-10-30 初版：基于 commit `525b1d1` 完整成文。覆盖 add/cognify/search 三入口、线性任务链与按数据项路由、DataPoint 元数据契约、三通道混合检索、块级增量更新与分级遗忘、数据集级隔离与评测框架。
 - 2026-11-07 基于 commit `8853378ea`（v1.6.7 合并窗口）补充：数据库连接串摄入新增默认拒绝的准入检查——API 服务端默认拒绝、SDK/CLI/MCP 允许、`ALLOW_DATABASE_INGESTION` 显式控制；指向 cognee 自身存储的连接一律拒绝；驱动报错原文只留服务端日志（提交 dd5a45afe 等），补入"加工管道"节。
+- 2026-11-16 基于 commit `4053f6cc5`（v1.6.8 合并窗口，含 SDK-1112 系列）补充：数据项审计表（PROVENANCE_TRACKING 开关，落库成功后写入、哈希链追加式存储、墓碑生命周期、失败即回滚），审计写入从管道任务移到 `add_data_points` 落库后执行，补入"加工管道"节；update 路径新增无引用存储文件清理（16 并发宽度、声明保护、失败一并抛出，SDK-1541），补入"更新与遗忘"节；CODE 查询不参与数据集路由（提交 bb83717fe）与混合检索通道重构（每通道独立 top_k 参数、空库报 NoDataError），补入"记忆检索"节；POST /add 接受 dlt_config（SDK-1523），补入"加工管道"节。全篇行号引用按新代码核对更新。
