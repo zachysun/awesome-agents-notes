@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `cead615b`（2026-11-18） |
+| 笔记基准 | commit `499a58a3`（2026-11-19） |
 
 Pi 是 earendil-works 开源的 AI agent 工具包，TypeScript 写的，monorepo（一个仓库里放多个软件包）组织在 `packages/` 下，现在 12 个包，GitHub 上 star 数很高（旧笔记记录为 10.8 万）。它最出名的产品是 `pi` 这个终端编码 agent——在命令行里对话、读写代码的 AI 助手，同类有 codex、opencode、Claude Code。但它的定位不止于此，README 里的词是 "agent harness"（套件/外壳），意思是给你一套搭 agent 的现成骨架：从统一大模型接口、agent 运行时、终端界面库，到持久化运行时，一层一层都能单独拿出来用。
 
-这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都从"它面对什么情况"讲起，把一次调用、一次提交、一次崩溃恢复从头走到尾，让不了解这个项目的人也能顺着读完。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `cead615b`（2026-11-18）。
+这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都从"它面对什么情况"讲起，把一次调用、一次提交、一次崩溃恢复从头走到尾，让不了解这个项目的人也能顺着读完。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `499a58a3`（2026-11-19）。
 
 ## 它要解决什么问题
 
@@ -402,7 +402,7 @@ chord 还长出一个实验性的会话同步子包 `@earendil-works/chord/sync`
 
 p2 把服务端还需要的会话数据继续搬进 store（提交 cc96b4a9、2e74510d）：会话目录（标题、位置、模型与档位、置顶、归档、`/tree` 分支）此前住在 Chord 之外的独立 SQLite 文件里，会话的导出、导入、删除都带不上它，备份 store 也会丢掉会话清单；现在按 host 键控行的形式进服务端 store，subagent 清单与共享两张表随后跟进——为整实例备份（outbox 同步到 Radius）铺路。p2 还长出了服务端 artifact（提交 6f1a96e1）：HTML 与 Markdown 工件按会话存进服务端文档，导出、导入、删除与克隆、分叉都随身携带，模型经 `artifact` 命名空间下的一组 code-mode 工具读写，HTML 页面跑在带沙箱的 iframe 里。
 
-p3 应用本体随后建到了能发布的形态（提交 5f89cc0a，107 个文件、约两万行）：切片 1 重做——p3 有了自己的应用套件 `apps/p3/src/kit/`（app、config、identity、layout 各归一处），会话经插件的命名查询取用、列表继续加载而不重发已有行，登录沿用套件的 sign-ins 并带 owner 一次性链接。切片 26 是发布构建——应用以捆绑的 base code 发布，包名 `@earendil-works/p3`（`apps/p3/package.json:2`），`release:p3:local` 从源检出打本地发布包（根 `package.json:51`）。命令行入口 `p3`（`apps/p3/bin.ts`）管一机多 Pi：每个 Pi 就是一个数据目录（默认 `~/.pi/p3`，`--pi <名字>` 选命名 Pi、`--dir <路径>` 选任意目录），`p3 server` 前台运行（收到 SIGINT/SIGTERM 即关、worker 停下、数据目录的锁立即可用），`status`/`stop`/`restart`/`list` 经后台 supervisor 管理各 Pi 的服务器；HTTP 服务器带身份验证，启动前先检查 Node 最低版本；会话 worker 的内存基线定在 50 MiB（提交 bddf3d9a），发布内存测试按 55 MiB 把关。
+p3 应用本体随后建到了能发布的形态（提交 5f89cc0a，107 个文件、约两万行）：切片 1 重做——p3 有了自己的应用套件 `apps/p3/src/kit/`（app、config、identity、layout 各归一处），会话经插件的命名查询取用、列表继续加载而不重发已有行，登录沿用套件的 sign-ins 并带 owner 一次性链接。切片 26 是发布构建——应用以捆绑的 base code 发布，包名 `@earendil-works/p3`（`apps/p3/package.json:2`），`release:p3:local` 从源检出打本地发布包（根 `package.json:51`）。命令行入口 `p3`（`apps/p3/bin.ts`）管一机多 Pi：每个 Pi 就是一个数据目录（默认 `~/.pi/p3`，`--pi <名字>` 选命名 Pi、`--dir <路径>` 选任意目录），`p3 server` 前台运行（收到 SIGINT/SIGTERM 即关、worker 停下、数据目录的锁立即可用），`status`/`stop`/`restart`/`list` 经后台 supervisor 管理各 Pi 的服务器；HTTP 服务器带身份验证，启动前先检查 Node 最低版本；会话 worker 的内存基线定在 50 MiB（提交 bddf3d9a），发布内存测试按 55 MiB 把关。内存治理接着往下做了两层（2026-11-19）：worker 的 V8 标志按 Node 版本设置（`apps/p3/src/install.ts:50`）——`--gc-memory-reducer-start-delay-ms=8000` 把 V8 内存压缩器的启动从默认的工作后 30 秒提前到 8 秒（Node 26 的默认太晚，一次突发请求产生的垃圾在旧生代留过测量点；Node 24 本来就是 8 秒，这让两个版本行为一致，提交 94284243）；Node 26 上再加 `--managed-zone-memory`（提交 60b893ea）——V8 自己池化编译器的 zone 内存、不从 malloc 分配，glibc 保留的已释放内存随之减少，五个 subagent 执行完毕后的实测占用从 48.7 降到 42.6 MiB；这个标志 Node 24 不认识、会拒绝启动，所以只在 Node 26 及以上添加。密钥文件的写入也定了规矩（提交 7b570f35）：一律用 rename 落到最终名字，绝不用硬链接——Android 禁止硬链接。
 
 ### codemode：模型写代码、代码调工具
 
@@ -504,3 +504,4 @@ evals 是行为评测——用真实任务考察 agent 表现，不是玩具基�
 - 2026-11-16 基于 commit 22fc026b 补充：durable 可挂起工作（信号、工具停靠、可睡眠的 beforeTool 门、钩子任务）与 onAbort keep 输入保留；chord 切片 14 命名查询与准入、登录改名 sign-ins、p2 会话目录与 subagent 及共享数据迁入 store、服务端 artifact、store 遥测默认关；ai 侧 strict schema 无类型节点回退、Anthropic 非 strict 保留根部 additionalProperties、重试模式补 Connection closed 与裸套接字错误码、Copilot 思考档位改由目录提供；agent 循环批量中止补齐每个工具的结果、pi.exec 信号终止按 128 加信号编号报告、bash 超长尾行保留输出、扩展隐藏自有工具不再丢弃挂起的 MCP 工具。
 - 2026-11-17 基于 commit 5a2febe5 补充（35 个非 merge 提交；实质主题如下）：session_start 事件语义五笔（reload 空绑定宿主漏发、RPC 会话替换跑两遍、--mode json 先订阅再绑定、会话替换时报告诊断、pi.events 处理错误按扩展错误上报，e03dca7a、beffcde9、6aab551a、c47ad043、18e99051，正文扩展机制节扩段）；Codex WebSocket 60 分钟连接限制可重试与新请求少复用缓存连接（bb1a2b35）与模型回退在全部模式下报告（c8c456c8），正文模型接入节扩段；Mistral 工具默认非 strict（supportsStrictMode 兼容标志，2c2a77f9，正文约束采样段扩句）；TUI 全屏滚动帧成本按视口计算（b7bb7ca9）与包管理命令输出捕获、两处直接写终端移除（b513b64d、ac78a606），正文 pi-tui 节扩段。另记小项：p2 侧栏列出全部项目并支持从侧栏新建项目（c17ff512、0826f9f3）、手势与按键提示按设备与平台区分（b347a94f）。
 - 2026-11-18 基于 commit cead615b 补充（8 个非 merge 提交）：GPT-6.2 Astra 与 Sol 进 OpenAI、Azure OpenAI Responses 与 OpenAI Codex 三个提供方（官方定价、Astra 长上下文档位、工具搜索、额外工具、会话中改思考档；GPT-6 系拒绝 effort none 与 minimal、off 档置 null，e56d35ce；Codex 路线窗口改用 /backend-api/codex/models 实际返回值 Sol 500K、Astra 272K，cead615b，正文模型接入节扩段）；p3 发布构建（切片 1 重做出自有应用套件与会话命名查询与 sign-ins owner 一次性链接、切片 26 发布构建、@earendil-works/p3 包、release:p3:local、p3 命令管一机多 Pi 与后台 supervisor 与 HTTP 身份验证与 Node 最低版本检查、会话 worker 内存基线 50 MiB 与发布内存测试 55 MiB 把关，5f89cc0a、bddf3d9a，正文 chord 节扩段）。另记小项：p2 转录旁的树面板（1f6f319b）；p2 TUI 适配 pi-tui 的缓存只读渲染输出（ecb86002）；p2-mac 远端 Pi 页面打开期间换新 view cookie（63595274）；p2 顶层导航放行中继图片与文件（9534ecad）。
+- 2026-11-19 基于 commit 499a58a3 补充（16 个非 merge 提交，p3 决策记录与切片简介 6 笔 docs 不计入正文）：会话 worker 内存治理两层（V8 内存压缩器启动提前到工作后 8 秒、Node 26 加 --managed-zone-memory 自池化编译器 zone 内存且实测五个 subagent 之后 48.7→42.6 MiB、标志按 Node 版本添加，94284243、60b893ea，正文 chord 节扩段）；p3 密钥文件 rename 写入禁硬链接（7b570f35，正文同段补句）。另记小项：coding-agent 退出时 resume 命令独立一行打印（63dec262）；p3 进程条目移到 src/bootstrap（3cdb51bb）；p2-mac nightly 构建捆绑 p2 与 Node、经 Sparkle 更新，签名密钥脚本不回显（51abb2d7、f6d0c2f9）；p2 侧栏重建为按项目分组的状态/名字/详情条目（efd284ec）；p2 侧栏工作点改逐帧绘制并按整像素步进、动作按钮去背景板（499a58a3、b58f760f、f0f9478a）。
