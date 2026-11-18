@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `eadef1c`（2026-11-15，v0.34.63） |
+| 笔记基准 | commit `4e4fb4b`（2026-11-17，v0.34.65） |
 
 Letta Code 是 MemGPT 血统的现役实现。MemGPT 是 2023 年一篇著名论文提出的方案：让大模型自己管理一个"上下文之外的记忆区"，像操作系统管内存一样分页换入换出。这个方案工程化成的项目是 letta-ai/letta，累计 star 约 2.5 万。但要先说清一个仓库层面的变动：**letta-ai/letta 的 main 分支现在只剩一个导流页**——README 明说 "The current source code lives in `letta-ai/letta-code`"（letta 仓库 `README.md:5`），原来那套 Python 服务端整体保存在它的 `archive` 分支，官方声明废弃、不再修复。letta-code 是 TypeScript 重写的现役版本（npm 包 `@letta-ai/letta-code`），本笔记只写它。
 
 形态上它是一个终端编码 agent（`letta` 命令，`package.json:9-11`），定位与 Claude Code、codex 同类；README 的自述是 "stateful agent harness for creating agents that are more like people than tools"——有记忆、有身份、有随时间积累的经验的 agent（`README.md:5`）。与同类产品相比它的差异点非常集中：**记忆不是库里的一张表，而是 agent 名下一个 git 仓库里的 Markdown 文件**，agent 用普通文件编辑工具改它，改完提交；后台还有整理记忆的机制。本笔记就围绕这个核心展开。
 
-这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `eadef1c`（2026-11-15）。
+这份笔记按问题组织，不按 letta-code 的开发时间线：每个问题讲清 letta-code 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `ebc496e`（2026-10-29），跟进到 commit `4e4fb4b`（2026-11-17）。
 
 ## 它要解决什么问题
 
@@ -49,7 +49,11 @@ letta-code 的记忆系统叫 MemFS（memory file system）。每个 agent 在 `
 2. 渲染投影：每个根文件包成 `<label>...</label>` XML 块，`MEMORY.md` 包成 `<memory>` 块，子目录索引以 `<deferred-memory>` 条目列出（只给路径和索引内容，不给全文，`:154-199`）；
 3. 元数据块（agent id、会话 id、历史消息数）拼进去；
 4. 替换模板占位符——模板里没有占位符就追加到末尾（`:380-385`）；
-5. 可用技能清单以 `<available_skills>` 追加在最后（`:391-421`）。
+5. 可用技能清单以 `<available_skills>` 追加在最后（`compileAvailableSkillsBlock`，`:392-421`）。
+
+技能清单的更新方式单独值得讲。`client_skills`（客户端技能目录）会被渲染进提示词前缀、随每次请求发送，清单只要有任何变化，模型服务商缓存的提示词前缀就会失效，前面轮次的思考块（thinking blocks，推理模型已输出的思考内容）也随之丢弃（`src/agent/client-skills-baseline.ts:1-22` 的模块注释写明了这个动机）。为此每个会话各自维护一份冻结的技能清单：发现流程每轮照常扫描技能目录得到当前清单（`src/agent/message.ts:446-458`），真正发送的却是上次冻结的那份——注释原话 "Keep the prompt prefix byte-stable: send the conversation's frozen catalog and announce changes through a skill-delta reminder instead"（`message.ts:464-471`，计划逻辑 `client-skills-baseline.ts:90-120`）；目录里的变化改由一条技能增量提醒送到模型：按名字对比上次已送达的清单，产出新增、更新（description 或路径变化）、移除三类差异，三类都空则不发提醒（`src/agent/client-skills.ts:243-261`）。提醒正文是一段 `<system-reminder>`：声明本更新取代系统提示词里的技能清单与更早的技能更新，新增与更新的条目列出名字加描述（正文保持元数据级，技能正文仍靠 Skill 工具按需加载）、已移除的技能逐个指名、并声明即使系统提示词里仍有它们也不再使用、末尾附当前完整清单的名字列表（`client-skills.ts:262-310`）。目录变化只在下一次模型边界随请求送达（包括工具调用的续接），不会因文件监视直接发起一次新的对话轮（`message.ts:473-486`）。
+
+两个配套语义保证这套机制自洽。其一，冻结清单与"已送达记录"只在服务端接受请求之后才更新——被拒绝的请求不会让这次提醒失效，重试时提醒仍在（`message.ts:640-641`）；其二，上下文压缩会重写历史、让早前的提醒从转写里消失，所以观测到压缩就标记重新冻结，下一次请求把当前清单整体作为新基准发送，此后又回到"固定载荷加增量提醒"的节奏。压缩观测有两条来源：手工压缩请求，以及后端打开的流里出现的 `summary_message` 消息块（`client-skills-baseline.ts:156-170`、`src/backend/compaction-events.ts:1-9,35-41`）；某个请求的流里出现了汇总消息、但基准已被之后接受的请求替换时，该请求的回调直接跳过、不触发重新冻结（`client-skills-baseline.ts:134-145`）。冻结基准按会话保存在内存里，同时持久化到 `<config-dir>/state/<backend-namespace>/client-skills-baselines/<scope>.json`，进程重启或会话恢复后发送的仍是同一份载荷；数据缺失或损坏就重新冻结一份，持久化失败从不阻断请求发送（`src/agent/client-skills-baseline-store.ts:5-7,149-166`）；没有独立会话 id 的默认会话按 agent 各记一份基准（`client-skills-baseline.ts:82-88`）。
 
 上下文的第三部分——压缩摘要——有一个保底分支（提交 `7f9d42d`，PR 5133）：完整压缩产出的摘要加保留消息仍然装不下时，压缩被判为"不可约"，此时不再让本轮失败，而是从最旧一侧按轮整体丢弃消息，直到剩余内容装得下；每一轮连同它的工具调用和结果一起消失，工具结果不会脱离调用单独存活；最近一轮用户消息始终保留，"较旧消息因压缩无法再缩小上下文而被丢弃"的警告替代摘要写入（`src/backend/local/compaction.ts:178-180`，system prompt 永不逐出的说明在 `:134`）。该分支只在上下文溢出触发压缩时启用，从最旧侧找不到可丢弃的轮次时放弃丢弃。
 
@@ -156,3 +160,4 @@ flowchart TD
 - 2026-11-10 基于 commit `e7b7a02`（v0.34.50）补充：Cloud 后端的新鲜预设 subagent 改为运行在无自身 agent 的临时会话里，会话链接父 agent 供给 MCP、密钥与权限（PR 5580），补入"扩展机制"节；客户端工具调用前台等待超时自动转后台、回执先行与结果回流（PR 5620），补入"Agent Loop"节。
 - 2026-11-11 基于 commit `ad308cd`（v0.34.51）补充：永不转后台的状态变更工具加硬超时——挂死的调用中止并以错误结果结算（一般 10 秒、worktree 工具 60 秒、AskUserQuestionAsync 不设上限），相应改写"Agent Loop"节超时机制段落（PR 5642）。
 - 2026-11-16 基于 commit `eadef1c`（v0.34.63，窗口含 PR 5351 系列）补充：本地后端压缩新增模式设置——`all` / `sliding_window`（默认）之外多了 `self_compact_all` / `self_compact_sliding_window` 两个自压缩变体，摘要请求复用 agent 自己的请求上下文（同 system prompt、同工具、完整历史）执行，溢出或无产出时回退转写摘要，补入"上下文构造"节。全篇行号引用按新代码核对更新（压缩、主循环、适配器循环、后端接口）。
+- 2026-11-18 基于 commit `4e4fb4b`（v0.34.65，窗口含 PR 5486）补充：`client_skills` 改为按会话冻结的固定载荷——每次请求发送同一份技能清单以保住模型服务商的提示词缓存，技能目录变化经一条技能增量提醒在下次模型边界送达，上下文压缩（手工压缩或流内 `summary_message`）触发重新冻结、基准持久化到本地 state 目录使重启后仍发送同一份载荷，补入"上下文构造"节。
