@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Python |
-| 笔记基准 | commit `869c1b2`（2026-11-15） |
+| 笔记基准 | commit `c287b36`（2026-11-19） |
 
 Graphiti 是 Zep（一个 agent 记忆产品）背后的开源引擎，定位"为 AI agent 构建时序上下文图谱"（`README.md:37-39`）。GitHub star 约 3.2 万。它把 agent 的对话和事件实时加工成一张知识图谱，但和传统知识图谱有个关键区别：每条事实带着时间属性，既能回答"现在什么是对的"，也能回答"什么时候开始对的、什么时候不再对"。用官方的说法："tracking what's true now and what was true before"（`README.md:48`）。
 
 先澄清两个常见误解：第一，graphiti 不是 agent 框架——它自己明确说 "Neither is an agent memory product: Graphiti is a framework for building graphs"（`README.md:89-90`），循环在外部 agent 那里，它只管建图和查图；第二，它是纯 Python 项目，没有 Rust 组件（网上有些文章提的 Rust 服务不存在，`server/` 是 Python 的 FastAPI 服务）。
 
-这份笔记按问题组织，不按 graphiti 的开发时间线：每个问题讲清 graphiti 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `72b5c59`（2026-10-28），跟进到 commit `869c1b2`（2026-11-15）。
+这份笔记按问题组织，不按 graphiti 的开发时间线：每个问题讲清 graphiti 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `72b5c59`（2026-10-28），跟进到 commit `c287b36`（2026-11-19）。
 
 ## 它要解决什么问题
 
@@ -62,7 +62,7 @@ graphiti 的切入点是给图谱加上完整的时间维度：每条事实（�
 
 三个模型角色各有抽象基类：`LLMClient`（抽取和判重）、`EmbedderClient`（向量化）、`CrossEncoderClient`（检索重排序，一个对小模型逐条给"查询-文档"相关度打分的组件）。实现类在 `graphiti_core/llm_client/`（openai、anthropic、gemini、groq 及 OpenAI 兼容端点等）、`embedder/`、`cross_encoder/`。
 
-默认组合：LLM 用 openai 的 `gpt-6-luna`（`llm_client/openai_base_client.py:35`）、嵌入用 `text-embedding-3-small`（`embedder/openai.py:24`）、图库默认 Neo4j（`graphiti.py:353`）。两个"默认"容易搞混：核心库默认 Neo4j，但 MCP 服务端文档默认 FalkorDB（`mcp_server/README.md:28`）——两处默认不一致，部署时要显式指定。图库驱动现有三套实现：Neo4j、FalkorDB、Amazon Neptune（`driver/` 下三个目录）；Kuzu 驱动已从代码库整体删除——上游 Kuzu 项目停止开发后官方移除了全部相关代码（PR 2151），旧版本笔记里"代码还在、只是宣布废弃"的说法已经过时。
+默认组合：LLM 用 openai 的 `gpt-6-luna`（`llm_client/openai_base_client.py:35`）、嵌入用 `text-embedding-3-small`（`embedder/openai.py:24`）、图库默认 Neo4j（`graphiti.py:353`）。两个"默认"容易搞混：核心库默认 Neo4j，但 MCP 服务端文档默认 FalkorDB（`mcp_server/README.md:28`）——两处默认不一致，部署时要显式指定。图库驱动现有三套实现：Neo4j、FalkorDB、Amazon Neptune（`driver/` 下三个目录）；Kuzu 驱动已从代码库整体删除——上游 Kuzu 项目停止开发后官方移除了全部相关代码（PR 2151），旧版本笔记里"代码还在、只是宣布废弃"的说法已经过时。换 Anthropic 客户端时有一个容易踩的差别：temperature 参数不被支持——anthropic SDK 1.0 起不再接受该参数，Claude 5 与 Opus 4.7/4.8 模型会直接拒绝，构造客户端时设置非默认温度只会得到一条警告日志、参数被忽略（`graphiti_core/llm_client/anthropic_client.py:107-112`）。
 
 ## 建图
 
@@ -142,3 +142,4 @@ graphiti 的切入点是给图谱加上完整的时间维度：每条事实（�
 
 - 2026-10-30 初版：基于 commit `72b5c59` 完整成文。覆盖双时间轴数据模型、add_episode 建图八步、三级实体消歧漏斗、"LLM 提名 + 时间规则裁决"的失效机制、四路混合检索、证据驱动的删除与 group_id 隔离。
 - 2026-11-16 基于 commit `869c1b2` 补充：同图并发摄入模式（PR 2154，窗口内并行抽取消歧、按调用序提交、提交时只修补碰撞条目，状态存储可换 SQLite 实现多进程同图），补入"建图"节与设计原则；身份属性匹配改走通用节点查询、经公开 API 生效并新增参数校验（PR 2153），补入消歧段；Kuzu 驱动从代码库整体删除（PR 2151），模型接入节相应改写。全篇行号引用按新代码核对更新。
+- 2026-11-20 基于 commit `c287b36` 补充：Anthropic 客户端不再向 messages.create 发送 temperature——anthropic SDK 1.0 起不接受该参数、Claude 5 与 Opus 4.7/4.8 模型拒绝它，设置非默认温度只记录警告、参数被忽略（提交 bdd832b、eacedbc），补入"模型接入"节。
