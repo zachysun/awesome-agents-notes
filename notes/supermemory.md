@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `16ed414`（2026-11-02） |
+| 笔记基准 | commit `aad4a06`（2026-11-21） |
 
 Supermemory 自我定位是"State-of-the-art memory and context engine for AI"（`README.md:10`），GitHub star 约 3.1 万，在记忆类项目里排前四。它卖两件事：记忆（从用户数据里形成可复用的用户画像和事实）和上下文（把相关内容压缩后注入模型上下文），README 里给出的指标是 "95% Recall@15 with a 99.4% context reduction"（`README.md:32-33`）。
 
 读这份笔记前必须知道一个事实：**记忆引擎本体不在这个仓库里**。官方自托管文档写明："The SDKs and other components in the public repository are open source; the downloadable self-hosted server binary is built from a separate, non-public codebase"（`apps/docs/self-hosting/overview.mdx:20`）。仓库里开源的是三样东西：MCP（Model Context Protocol，模型接外部工具的标准协议）服务端全套源码（`apps/mcp`）、面向各 AI 框架的接入胶水（`packages/tools`）、引擎数据模型的类型镜像（`packages/validation`），外加一套非常细致的官方文档（`apps/docs`）。这决定了这篇笔记的读法：它一半讲代码，一半讲"从接口契约和数据模型反推引擎的设计判断"，每个论断会注明证据来自代码还是文档。
 
-这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `16ed414`（2026-11-02）。
+这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `aad4a06`（2026-11-21）。
 
 ## 它要解决什么问题
 
@@ -43,7 +43,7 @@ Bun + Turbo 管理的 monorepo（`package.json:16` 用 Bun，不用 npm/pnpm）�
 以下字段出自 `packages/validation/schemas.ts`（引擎内部模型的镜像，证据等级：代码但非 API 规范）：
 
 - **Document**（`:61-101`）：原始内容、摘要、状态、处理元数据。有两个值得注意的细节：`contentHash`（内容哈希，支撑增量写入的变更检测）；`summaryEmbedding` 和 `summaryEmbeddingNew` **两份向量字段并存**（`:92-95`）——换嵌入模型时新旧两代向量共存，平滑迁移而不是停机重嵌。
-- **Chunk**（`:106-124`）：文本块，向量字段同样新旧两代（`:115-120`），另有 `matryokshaEmbedding`（Matryoshka 嵌入，一种可截断的嵌套向量表示——同一向量取前一半维度也能用，检索时可按算力预算选精度）。
+- **Chunk**（`:106-124`）：文本块，向量字段同样新旧两代（`:115-120`），另有 `matryokshaEmbedding`（Matryoshka 嵌入，一种可截断的嵌套向量表示——同一向量取前一半维度也能用，检索时可按算力选精度）。
 - **MemoryEntry**（`:242-279`）：一条记忆。除了内容和嵌入，有三个结构性设计：版本链（`version`/`parentMemoryId`/`rootMemoryId`/`isLatest`，`:250-253`）——记忆被修正时生成新版本挂到链上，检索默认只取 `isLatest`，历史可审计；关系字段（`memoryRelations`，取值 `updates`/`extends`/`derives`，`:239-256`）——记忆之间不是孤立的行，而是有"更新/扩展/派生"语义的边；遗忘字段（`isForgotten`/`forgetAfter`/`forgetReason`，`:262-266`）——软删除是数据模型的一部分。
 - **Space**（`:218-237`）：隔离单元，通过 `containerTag` 与旧概念兼容。
 
@@ -64,9 +64,17 @@ flowchart TD
     E --> F["响应后：整轮对话格式化<br/>用同一个 id 回写成文档<br/>（同 id = 同文档，dreaming 固定 instant）"]
 ```
 
-几个细节的用意：画像（profile）和检索并行，因为画像不依赖查询——"用户叫我什么名字"这种与查询语义无关的事实必须常驻上下文，不能指望检索命中（文档证据，`apps/docs/concepts/user-profiles.mdx:47-67`）；画像分 static（长期稳定）/dynamic（近期状态）两层，另有按主题的 buckets 第三轴（`:75-113`），两个维度独立演进；注入的内容放进固定标签并整体替换旧块，多轮对话不会重复堆叠记忆块（`packages/tools/src/shared/memory-context.ts:1-41`）；回写固定用 `dreaming: "instant"` 且重试次数显式设为 0（注释原话："Retrying a committed mutation can turn its success into a misleading not-found result"，`apps/mcp/src/server/client/index.ts:283-293`）——对话回写失败不重试，宁可丢一轮对话也不冒重复写入的风险。检索在关键路径上也不重试（`packages/tools/src/shared/memory-client.ts:39-43`），带超时中止。
+几个细节的用意：画像（profile）和检索在第一轮并行取，因为画像不依赖查询——"用户叫我什么名字"这种与查询语义无关的事实必须常驻上下文，不能指望检索命中（文档证据，`apps/docs/concepts/user-profiles.mdx:47-67`）；画像分 static（长期稳定）/dynamic（近期状态）两层，另有按主题的 buckets 第三轴（`:75-113`），两个维度独立演进；注入的内容放进固定标签并整体替换旧块，多轮对话不会重复堆叠记忆块（`packages/tools/src/shared/memory-context.ts:1-41`）；回写固定用 `dreaming: "instant"` 且重试次数显式设为 0（注释原话："Retrying a committed mutation can turn its success into a misleading not-found result"，`apps/mcp/src/server/client/index.ts:283-293`）——对话回写失败不重试，宁可丢一轮对话也不冒重复写入的风险。检索在关键路径上也不重试（`packages/tools/src/shared/memory-client.ts:39-43`），带超时中止。
 
-中间件有三种模式：`profile`（只注入画像，最省）、`query`（画像加按查询检索）、`full`（文档证据，`packages/tools/src/vercel/middleware.ts:203-208`），按对话轮缓存避免工具调用轮重复检索（`middleware.ts:296-336`）。
+中间件有三种模式：`profile`（只注入画像，最省）、`query`（画像加按查询检索）、`full`（文档证据，`packages/tools/src/vercel/middleware.ts:207-214`）；另有独立的记忆持久化开关 `addMemory`，默认 `always`（每个结束的轮次后台回写），设 `never` 就只读不写（`vercel/middleware.ts:215-220`、`openai/middleware.ts:125-130`）。
+
+三个包装器（OpenAI、Mastra、VoltAgent）共用同一套轮次记忆（`packages/tools/src/shared/turn-memory.ts`），目标是保住模型服务商的提示词缓存：同一轮对话的多次请求——工具调用后的续接、历史被裁剪后重发——必须拿到字节完全相同的记忆块，否则前缀一变缓存就失效。做法有三处：
+
+- **按轮冻结检索结果**。每个会话一个 `TurnMemory`，内部用 LRU 缓存最多 500 轮；轮次键是该条用户消息归一化后的文本，加前一条助手回复的指纹（`turnKey` 在 `:39`，`turnKeys` 在 `:54-70`）——重复提问算新一轮，历史裁剪也不会让保留下来的消息换键。同一轮第二次请求直接复用第一次的 Promise，不再检索（`TurnMemory.recall`，`:205-236`）。
+- **画像每会话只取一次**。第一轮取回的画像被冻结下来在后续所有请求里原样重发（`frozen` 字段，`:190`、`:228`）；此后新增的内容由每轮检索承担，检索会跳过画像已经说过的部分（`buildTurnRecall`，`:114-184` 注释原话 "The profile is fetched once per conversation and never refreshed; search carries anything newer and skips what the profile already says"）。工具调用轮、只带工具结果的请求也会拿到画像，system prompt 不在两种请求之间反复切换（`openai/middleware.ts:473-497`）。
+- **只替换自己加的块**。注入时先剥掉上一版 SDK 写的 `<supermemory>` 块，再把新块追加回去；调用方自己写的文本一个字节都不动，序列化结果稳定可缓存（`withTurnMemory`，`turn-memory.ts:77-96`）。
+
+会话边界靠首条用户消息识别：首条消息变了，包装器认为在服务另一个会话，清空轮次缓存与冻结画像（`openai/middleware.ts:466-471`）。检索有 3 秒上限，超时或出错返回空记忆、从不向外抛错——宁可这一轮没记忆，也不让检索卡住对话（`turn-memory.ts:18,205-236`）。
 
 ## 更新与遗忘
 
@@ -81,7 +89,7 @@ flowchart TD
 
 ## 持久化与恢复
 
-服务端队列的失败重试实现不可见（闭源），开源侧能确认的是状态契约：处理状态和 dreaming 状态分开跟踪、每步留痕。读路径的稳健性在开源代码里：检索超时即中止、写路径显式零重试（理由见上文）、只有普通文档读取用默认重试（`packages/tools/src/tools-shared.ts:26-29`）。
+服务端队列的失败重试实现不可见（闭源），开源侧能确认的是状态契约：处理状态和 dreaming 状态分开跟踪、每步都记录下来。读路径的稳健性在开源代码里：检索超时即中止、写路径显式零重试（理由见上文）、只有普通文档读取用默认重试（`packages/tools/src/tools-shared.ts:26-29`）。
 
 ## 扩展机制
 
@@ -119,3 +127,4 @@ flowchart TD
 
 - 2026-10-30 初版：基于 commit `a619e27` 完整成文。覆盖两阶段写入（索引先行、dreaming 异步成忆）、记忆版本链与关系边、withSupermemory 注入流程、namespace 物理隔离与遗忘契约；明确标注引擎本体闭源、各论断的证据来源（代码或文档）。
 - 2026-11-03 基于 commit `16ed414` 补充：MCP 的图谱读取切到 v5 namespace graph feed——fetch-graph-data 从 `/ns/{namespace}/graph` 读 document/memory 节点与 source/关系边（隐藏路由、cursor 分页，PR 1871），补入"检索与注入"节；同步修正两处因代码移动偏移的引用行号。
+- 2026-11-22 基于 commit `aad4a06`（`@supermemory/tools` 3.2.0）补充：三个包装器共用轮次记忆（`shared/turn-memory.ts`）以保住模型服务商的提示词缓存——按"用户消息文本 + 前一条助手回复指纹"冻结每轮检索结果、画像每会话只取一次后原样重发、注入只替换 SDK 自己写的块，首条用户消息变化即视为新会话清空缓存，检索 3 秒上限超时返回空记忆（PR 1906）。补入"检索与注入"节，并把 `addMemory` 持久化开关与三种模式的引用行号一并核对更新。
