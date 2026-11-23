@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `aad4a06`（2026-11-21） |
+| 笔记基准 | commit `fa2af93`（2026-11-22） |
 
 Supermemory 自我定位是"State-of-the-art memory and context engine for AI"（`README.md:10`），GitHub star 约 3.1 万，在记忆类项目里排前四。它卖两件事：记忆（从用户数据里形成可复用的用户画像和事实）和上下文（把相关内容压缩后注入模型上下文），README 里给出的指标是 "95% Recall@15 with a 99.4% context reduction"（`README.md:32-33`）。
 
 读这份笔记前必须知道一个事实：**记忆引擎本体不在这个仓库里**。官方自托管文档写明："The SDKs and other components in the public repository are open source; the downloadable self-hosted server binary is built from a separate, non-public codebase"（`apps/docs/self-hosting/overview.mdx:20`）。仓库里开源的是三样东西：MCP（Model Context Protocol，模型接外部工具的标准协议）服务端全套源码（`apps/mcp`）、面向各 AI 框架的接入胶水（`packages/tools`）、引擎数据模型的类型镜像（`packages/validation`），外加一套非常细致的官方文档（`apps/docs`）。这决定了这篇笔记的读法：它一半讲代码，一半讲"从接口契约和数据模型反推引擎的设计判断"，每个论断会注明证据来自代码还是文档。
 
-这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `aad4a06`（2026-11-21）。
+这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `fa2af93`（2026-11-22）。
 
 ## 它要解决什么问题
 
@@ -26,7 +26,7 @@ Bun + Turbo 管理的 monorepo（`package.json:16` 用 Bun，不用 npm/pnpm）�
 - `packages/tools`——`@supermemory/tools`：AI SDK、OpenAI、Mastra、VoltAgent、Claude（memory tool 桥接）五个框架入口，核心是 `withSupermemory` 中间件。
 - `packages/validation`——引擎内部数据模型的 Zod schema（TypeScript 的校验库定义）镜像。注意这是内部模型不是公共 API：里面有 v5 文档已弃用的字段名，读它时要当成"引擎存了什么"的参考，不当成"API 长什么样"的规范。
 - `apps/docs`——文档站（Mintlify），本笔记的重要证据来源，标注"文档证据"处均出自这里。
-- 其余：`apps/web`（跳转控制台的壳）、`packages/memory-graph`（图谱可视化组件）、五个 Python 集成包（构建在独立仓库）。
+- 其余：`apps/web`（跳转控制台的壳）、`packages/memory-graph`（图谱可视化组件）、`packages/` 下五个 Python 包的源码——`openai-sdk-python`、`pipecat-sdk-python`、`livekit-sdk-python`、`cartesia-sdk-python`、`agent-framework-python`，各是独立的 PyPI 包，作用与 TypeScript 侧的 `packages/tools` 相同：把记忆注入与回写包进框架中间件。
 
 ## 主轴：先可搜、后成忆——写入分两阶段
 
@@ -75,6 +75,12 @@ flowchart TD
 - **只替换自己加的块**。注入时先剥掉上一版 SDK 写的 `<supermemory>` 块，再把新块追加回去；调用方自己写的文本一个字节都不动，序列化结果稳定可缓存（`withTurnMemory`，`turn-memory.ts:77-96`）。
 
 会话边界靠首条用户消息识别：首条消息变了，包装器认为在服务另一个会话，清空轮次缓存与冻结画像（`openai/middleware.ts:466-471`）。检索有 3 秒上限，超时或出错返回空记忆、从不向外抛错——宁可这一轮没记忆，也不让检索卡住对话（`turn-memory.ts:18,205-236`）。
+
+Python 侧的两个 SDK 沿用同一套语义，各自的框架约束带来不同细节。
+
+`supermemory-openai-sdk`（`packages/openai-sdk-python`）的中间件把每轮检索结果固定在该轮用户消息上、画像固定在 system 提示里，后续请求原样重发（`src/supermemory_openai/middleware.py:129-194` 的 `_TurnBlock` 与 `_ConversationMemory`，会话内最多保留 500 轮）。历史被从头部裁剪时，包装器按位置把保留下来的轮次映射回已存的块，键不随裁剪漂移（`_ConversationMemory.resolve`，`:148-175`）；并发重复请求先到的那份块不被覆盖（`pin`，`:182-192`）。同步客户端的召回跑在一个临时守护线程的独立事件循环里，调用方是否处在事件循环内都一样。回写完全不占模型调用的时间：异步客户端用 asyncio 任务、同步客户端用守护线程，5 秒超时零重试，解释器退出时再给未完成的同步回写最多 5 秒（`middleware.py:39-41`，文档 `packages/openai-sdk-python/README.md:143-186`）。流式回复在最后一个 chunk 保存；走 `with_streaming_response` 时包装器看不到正文，这类轮次在请求发出时就保存、不含回复（同文档 `:185`）。
+
+`supermemory-pipecat-sdk`（`packages/pipecat-sdk-python`）面向语音管道：画像取一次后放进第一条 system 消息（没有就新建一条打头的），每轮检索结果追加到对应的用户消息，历史消息保留最初收到的块（`src/supermemory_pipecat/service.py:186-195`）。`inject_mode` 默认 `auto`，行为等同 `user`，也就是缓存安全的形态；设 `system` 则每轮重写 system 消息里的检索块，提示缓存随之失效（`service.py:218-232`）。检索结果的时间戳渲染成绝对日期 `[2026-03-04]`，不用"三天前"这类相对表述——文本不随时间变化，缓存前缀才稳（`utils.py:35-44,155-163`）。召回同样 3 秒上限、零重试，失败就让这一轮没有记忆；清理时最多等 `storage_drain_timeout`（默认 3 秒）把未写完的对话送出去（`service.py:318,334,470-474`）。有一个语音场景的硬限制要留意：Gemini Live 与 OpenAI Realtime 这类语音到语音模型只读它们最初收到的上下文（Pipecat 0.0.98 至 1.7.0），除重连外后续 context 帧只转发新的工具结果，任何 `inject_mode` 下改动的 system 消息或新的用户消息都到不了模型；默认形态下只有画像能通过开场的 system instruction 送达，每轮检索结果到不了（文档 `packages/pipecat-sdk-python/README.md:115-127`）。
 
 ## 更新与遗忘
 
@@ -128,3 +134,4 @@ flowchart TD
 - 2026-10-30 初版：基于 commit `a619e27` 完整成文。覆盖两阶段写入（索引先行、dreaming 异步成忆）、记忆版本链与关系边、withSupermemory 注入流程、namespace 物理隔离与遗忘契约；明确标注引擎本体闭源、各论断的证据来源（代码或文档）。
 - 2026-11-03 基于 commit `16ed414` 补充：MCP 的图谱读取切到 v5 namespace graph feed——fetch-graph-data 从 `/ns/{namespace}/graph` 读 document/memory 节点与 source/关系边（隐藏路由、cursor 分页，PR 1871），补入"检索与注入"节；同步修正两处因代码移动偏移的引用行号。
 - 2026-11-22 基于 commit `aad4a06`（`@supermemory/tools` 3.2.0）补充：三个包装器共用轮次记忆（`shared/turn-memory.ts`）以保住模型服务商的提示词缓存——按"用户消息文本 + 前一条助手回复指纹"冻结每轮检索结果、画像每会话只取一次后原样重发、注入只替换 SDK 自己写的块，首条用户消息变化即视为新会话清空缓存，检索 3 秒上限超时返回空记忆（PR 1906）。补入"检索与注入"节，并把 `addMemory` 持久化开关与三种模式的引用行号一并核对更新。
+- 2026-11-23 基于 commit `fa2af93` 补充：同一套轮次记忆语义移植到 Python 侧两个 SDK——`supermemory-openai-sdk` 的历史裁剪按键回映射、并发重复请求不覆盖首块、同步客户端召回跑独立线程事件循环、回写零重试且不占模型调用时间（PR 1913）；`supermemory-pipecat-sdk` 的 `inject_mode` 默认走缓存安全的 `user` 形态、检索结果渲染绝对日期、清理等待上限 `storage_drain_timeout`，并记下语音到语音模型只读开场上下文的硬限制（PR 1915）。补入"检索与注入"节；"仓库怎么分工"节补列五个 Python 包的实际位置。
