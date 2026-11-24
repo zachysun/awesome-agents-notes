@@ -12,6 +12,8 @@
 | opencode | [anomalyco/opencode](https://github.com/anomalyco/opencode) | [notes/opencode.md](notes/opencode.md) |
 | pi | [earendil-works/pi](https://github.com/earendil-works/pi) | [notes/pi.md](notes/pi.md) |
 
+综合版：[notes/harness-design.md](notes/harness-design.md)，按特性点横向对比这七个项目的设计取舍。
+
 ## Agent memory
 
 | 项目 | 源仓库 | 笔记 |
