@@ -85,6 +85,24 @@ flowchart LR
 
 ## 主轴：自己不发电，做电网
 
+```mermaid
+flowchart TD
+    subgraph CLIENT["客户端（都连同一个服务）"]
+        T["终端界面"]
+        D["桌面应用"]
+        W["网页控制台"]
+        S["SDK / 第三方集成"]
+    end
+    T --> API["本地 HTTP 服务<br/>会话、工具、权限、事件都在这里"]
+    D --> API
+    W --> API
+    S --> API
+    API --> ENV1["本机环境"]
+    API --> ENV2["已配对机器<br/>经加密链路到达"]
+    API --> STORE["SQLite 与会话存储"]
+    PLUG["插件"] -.->|"与界面同一接入面"| API
+```
+
 OpenCode 自己不发电，它做电网。发电厂（模型服务商、第三方能力）五花八门，但只要按插座标准接入，就能用。这条主轴落在四个方向的标准接口上：
 
 - **接模型**走 Vercel AI SDK 的适配器体系（核心只直接依赖 3 个 `@ai-sdk/*` 包——provider、provider-utils、openai-compatible——各家接入由内置提供方表与自研客户端承接，见"模型接入"）；
