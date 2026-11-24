@@ -41,6 +41,12 @@ README 的第一段安装指引也体现这个哲学：安装步骤多，所以�
 
 dsh-superagent 自己不接模型、不实现工具循环、不存会话——这些全是 Harness 的能力，它只做三件 Harness 不做的事：决定哪些事件值得启动新工作（评估与授权）、管理工作的生命周期（工单）、以及控制注意力（消息与面板）。
 
+### subagent 与协作形态
+
+执行器可以派 subagent：从执行器会话派出去的独立 agent 实例，用 Harness 的 `standard` 预设，前台命令 60 秒才转后台——子任务的 job 在它结束时就终止，不需要像工单执行那样把长命令挪到后台（docs/003-execution.md "Worker subagents" 节）。subagent 的生命周期、并发上限与结果收集都由 Harness 提供（见 deepseek-harness.md 的 subagent 与 agent-team 两节），本仓库不额外定义派生协议。
+
+dsh-superagent 没有 agent team 形态。协作的边界固定在"主 Session 与执行器 Session"这一对角色上：工单是它们之间唯一的交接物，执行器内部再派生 subagent 属于执行细节，不改变工单的归属与授权。多代理协作由上下层工单链表达，与 Harness 的 Team 是两种不同的组织方式。
+
 ## 领域模型：八个概念
 
 docs/001-domain.md 定义了整个系统的词汇表，代码、工具、面板、文档只用这些词。核心八个：
