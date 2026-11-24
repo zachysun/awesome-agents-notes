@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Python |
-| 笔记基准 | commit `c287b36`（2026-11-19） |
+| 笔记基准 | commit `a61333e`（2026-11-23，v0.32.0） |
 
 Graphiti 是 Zep（一个 agent 记忆产品）背后的开源引擎，定位"为 AI agent 构建时序上下文图谱"（`README.md:37-39`）。GitHub star 约 3.2 万。它把 agent 的对话和事件实时加工成一张知识图谱，但和传统知识图谱有个关键区别：每条事实带着时间属性，既能回答"现在什么是对的"，也能回答"什么时候开始对的、什么时候不再对"。用官方的说法："tracking what's true now and what was true before"（`README.md:48`）。
 
 先澄清两个常见误解：第一，graphiti 不是 agent 框架——它自己明确说 "Neither is an agent memory product: Graphiti is a framework for building graphs"（`README.md:89-90`），循环在外部 agent 那里，它只管建图和查图；第二，它是纯 Python 项目，没有 Rust 组件（网上有些文章提的 Rust 服务不存在，`server/` 是 Python 的 FastAPI 服务）。
 
-这份笔记按问题组织，不按 graphiti 的开发时间线：每个问题讲清 graphiti 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `72b5c59`（2026-10-28），跟进到 commit `c287b36`（2026-11-19）。
+这份笔记按问题组织，不按 graphiti 的开发时间线：每个问题讲清 graphiti 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `72b5c59`（2026-10-28），跟进到 commit `a61333e`（2026-11-23）。
 
 ## 它要解决什么问题
 
@@ -62,7 +62,7 @@ graphiti 的切入点是给图谱加上完整的时间维度：每条事实（�
 
 三个模型角色各有抽象基类：`LLMClient`（抽取和判重）、`EmbedderClient`（向量化）、`CrossEncoderClient`（检索重排序，一个对小模型逐条给"查询-文档"相关度打分的组件）。实现类在 `graphiti_core/llm_client/`（openai、anthropic、gemini、groq 及 OpenAI 兼容端点等）、`embedder/`、`cross_encoder/`。
 
-默认组合：LLM 用 openai 的 `gpt-6-luna`（`llm_client/openai_base_client.py:35`）、嵌入用 `text-embedding-3-small`（`embedder/openai.py:24`）、图库默认 Neo4j（`graphiti.py:353`）。两个"默认"容易搞混：核心库默认 Neo4j，但 MCP 服务端文档默认 FalkorDB（`mcp_server/README.md:28`）——两处默认不一致，部署时要显式指定。图库驱动现有三套实现：Neo4j、FalkorDB、Amazon Neptune（`driver/` 下三个目录）；Kuzu 驱动已从代码库整体删除——上游 Kuzu 项目停止开发后官方移除了全部相关代码（PR 2151），旧版本笔记里"代码还在、只是宣布废弃"的说法已经过时。换 Anthropic 客户端时有一个容易踩的差别：temperature 参数不被支持——anthropic SDK 1.0 起不再接受该参数，Claude 5 与 Opus 4.7/4.8 模型会直接拒绝，构造客户端时设置非默认温度只会得到一条警告日志、参数被忽略（`graphiti_core/llm_client/anthropic_client.py:107-112`）。
+默认组合：LLM 用 openai 的 `gpt-6-luna`（`llm_client/openai_base_client.py:35`）、嵌入用 `text-embedding-3-small`（`embedder/openai.py:24`）、图库默认 Neo4j（`graphiti.py:353`）。两个"默认"容易搞混：核心库默认 Neo4j，但 MCP 服务端文档默认 FalkorDB（`mcp_server/README.md:28`）——两处默认不一致，部署时要显式指定。图库驱动现有四套实现：Neo4j、FalkorDB、Amazon Neptune（`driver/` 下三个目录，各自的 `*_driver.py` 与之并列）与 Relate（`driver/relate_driver.py` 加 `driver/relate/` 目录，PR 2158）——Relate 是嵌入式的，默认落在 `:memory:`，也可给一个数据库路径或一个已打开的 `RelateStore`（`RelateDriver.__init__`，`relate_driver.py:212-225`），同步接口 `RelateDriver.open()` 打开存储后返回驱动实例（`:242-250`）；它依赖 `relate-db==1.0.1`、只在 Python 3.11 以上提供，装在可选依赖组 `graphiti-core[relate]` 里（`pyproject.toml:41`），没装时构造驱动直接报错并给出安装命令（`relate_driver.py:35-40`）。这套驱动的内部会话模块自带版权声明与独立的 lint 豁免，属于把第三方存储适配进来的移植层。Kuzu 驱动已从代码库整体删除——上游 Kuzu 项目停止开发后官方移除了全部相关代码（PR 2151），旧版本笔记里"代码还在、只是宣布废弃"的说法已经过时。换 Anthropic 客户端时有一个容易踩的差别：temperature 参数不被支持——anthropic SDK 1.0 起不再接受该参数，Claude 5 与 Opus 4.7/4.8 模型会直接拒绝，构造客户端时设置非默认温度只会得到一条警告日志、参数被忽略（`graphiti_core/llm_client/anthropic_client.py:107-112`）。
 
 ## 建图
 
@@ -105,7 +105,9 @@ graphiti 的切入点是给图谱加上完整的时间维度：每条事实（�
 
 ## 隔离与多租户
 
-隔离主键是 `group_id`（`nodes.py:101` 的注释就是 "partition of the graph"）：所有节点、边、episode 都带它，全文检索强制拼上 group_id 过滤（`search_utils.py:85-96`）。更进一层，group_id 可以映射到独立的物理数据库：作用域解析发现 group_id 与当前数据库不同时，调用 `driver.clone(database=group_id)` 切库（`graphiti.py:1556-1585`）。这个机制的由来很诚实：旧实现并发时共享同一个 driver 对象，两个租户的数据会写错库（代码注释里引用了他们自己的 issue #1676）——修 bug 修出来的多租户特性。
+隔离主键是 `group_id`（`nodes.py:101` 的注释就是 "partition of the graph"）：所有节点、边、episode 都带它，全文检索强制拼上 group_id 过滤（`search_utils.py:85-96`）。更进一层，group_id 可以映射到独立的物理数据库：作用域解析发现 group_id 与当前数据库不同时，调用 `driver.clone(database=group_id)` 切库（`_resolve_request_scope`，`graphiti.py:1600-1625`）。这个机制的由来很诚实：旧实现并发时共享同一个 driver 对象，两个租户的数据会写错库（代码注释里引用了他们自己的 issue #1676）——修 bug 修出来的多租户特性。
+
+按 UUID 直接取数据这类绕过检索的入口，此前不校验归属：给一个别的租户的 UUID 就能读到那条边或那段摘要。现在按 UUID 的查询都接受可选的 `group_id`，给了就校验、不符直接报"找不到"（`EntityEdge.get_by_uuid`，`edges.py:339-363`；批量版 `get_by_uuids` 在 `:422`）；`summarize_saga` 同样接受 `group_id`，给了就先校验 saga 归属、取 episode 的 Cypher 也按 saga 的 group 过滤（`graphiti.py:681-733`）；`_validate_saga_scope` 还会回库核对已存在的 saga 是否真属于这个 group，防止只凭调用方传入的节点对象蒙混（`:160-173`）。MCP 服务端的事实与 saga 工具同步支持传 `group_id`，不传则退回配置里的默认 group（`mcp_server/src/graphiti_mcp_server.py`，提交 b0d2e4b、083f088）。
 
 ## 服务化与扩展
 
@@ -143,3 +145,4 @@ graphiti 的切入点是给图谱加上完整的时间维度：每条事实（�
 - 2026-10-30 初版：基于 commit `72b5c59` 完整成文。覆盖双时间轴数据模型、add_episode 建图八步、三级实体消歧漏斗、"LLM 提名 + 时间规则裁决"的失效机制、四路混合检索、证据驱动的删除与 group_id 隔离。
 - 2026-11-16 基于 commit `869c1b2` 补充：同图并发摄入模式（PR 2154，窗口内并行抽取消歧、按调用序提交、提交时只修补碰撞条目，状态存储可换 SQLite 实现多进程同图），补入"建图"节与设计原则；身份属性匹配改走通用节点查询、经公开 API 生效并新增参数校验（PR 2153），补入消歧段；Kuzu 驱动从代码库整体删除（PR 2151），模型接入节相应改写。全篇行号引用按新代码核对更新。
 - 2026-11-20 基于 commit `c287b36` 补充：Anthropic 客户端不再向 messages.create 发送 temperature——anthropic SDK 1.0 起不接受该参数、Claude 5 与 Opus 4.7/4.8 模型拒绝它，设置非默认温度只记录警告、参数被忽略（提交 bdd832b、eacedbc），补入"模型接入"节。
+- 2026-11-24 基于 commit `a61333e`（v0.32.0）补充：新增嵌入式 Relate 图库驱动（可选依赖 `graphiti-core[relate]`、默认 `:memory:`、仅 Python 3.11 以上，PR 2158），"模型接入"节的驱动清单改为四套；按 UUID 取边、saga 摘要、MCP 事实与 saga 工具补上 group 归属校验（提交 653ee5f、991bed7、b0d2e4b），补入"隔离与多租户"节。
