@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Python（另有 TypeScript SDK `mem0-ts/`） |
-| 笔记基准 | commit `753496c`（2026-10-30） |
+| 笔记基准 | commit `8096993`（2026-11-24） |
 
 Mem0（读作 "mem-zero"）是给 AI 应用做长期记忆的组件库，GitHub 上 star 数在同类项目里最高（本笔记写作时约 6.8 万）。它的定位是"记忆层"：你的聊天应用把对话交给它，它从对话里抽出值得长期记住的事实（用户偏好、背景信息、做过什么决定），存进向量数据库，下次对话前按需取回，让模型表现出"记得这个用户"的效果。同类项目有 Zep、cognee、supermemory，本笔记另有专篇。
 
 先说一个读这份笔记前必须知道的事：mem0 的开源版在 2026 年换过一代算法。网上大量文章（包括 mem0 自己早期的论文描述）讲的是旧版机制——让大模型对比新旧记忆，决定每条记忆是"新增/更新/删除/不操作"。这套逻辑在当前代码里只剩一段没人调用的提示词（`mem0/configs/prompts.py:176`），现行算法叫 V3：一次大模型调用只产出新记忆，不改不删旧记忆，把"状态变了"写进新记忆的文本里，冲突留到检索时靠排序解决。这篇笔记按 V3 写，涉及新旧差异的地方会明确指出。
 
-这份笔记按问题组织，不按 mem0 的开发时间线：每个问题讲清 mem0 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `26cdefb`（2026-10-26），跟进到 commit `753496c`（2026-10-30）。
+这份笔记按问题组织，不按 mem0 的开发时间线：每个问题讲清 mem0 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `26cdefb`（2026-10-26），跟进到 commit `8096993`（2026-11-24）。
 
 ## 它要解决什么问题
 
@@ -50,6 +50,8 @@ V3 把这个难题反过来解：**写入时永远只增不改**。新增记忆�
 规模上看两个数字：大模型支持 18 种提供商（openai、anthropic、gemini、deepseek、ollama 等，`factory.py:42-61`），向量库支持 23 种（qdrant、pgvector、elasticsearch、faiss 等，`factory.py:181-207`）。
 
 默认配置值得记一下，都是本地开箱能跑的：大模型默认 openai 的 `gpt-5-mini`（`mem0/llms/openai.py:40`）；嵌入默认 `text-embedding-3-small`、1536 维（`mem0/embeddings/openai.py:15,19`）；向量库默认 Qdrant，本地模式数据放在 `/tmp/qdrant`，不需要起服务（`mem0/vector_stores/configs.py:9`、`mem0/vector_stores/configs/vector_stores/qdrant.py:12`）。
+
+OpenAI 封装对推理模型有一层参数保护（`mem0/llms/base.py`）。`_is_reasoning_model`（`base.py:38-87`）按"名单加前缀"判定推理模型：名单收录 o1/o3 系列与 `gpt-5`、`gpt-5o` 系列、`gpt-6`（`:58-62`）；前缀规则再覆盖带日期后缀的 `o1-`/`o1.`/`o3-`/`o3.`（`:71-73`）、横杠连接的 `gpt-5-*` 全系（`gpt-5-mini`、`gpt-5-nano` 这类，`:75-80`）与整个 `gpt-6` 家族（`gpt-6-` 与 `gpt-6.` 两种前缀，`:82-85`）。判中的模型发请求时不带 temperature/top_p，只保留 messages、response_format、tools、tool_choice 与可选的 reasoning_effort（`_get_supported_params` 的推理分支，`:121-138`）——这些型号直接拒绝客户端采样参数；点分变体（如 `gpt-5.4-mini`）仍支持采样参数，按普通模型走全量参数分支（`:139-141`，`_get_common_params` 带上 temperature/top_p，`:161-170`）。另一处按名字分家：`gpt-5` 与 `gpt-6` 开头的全部型号用 `max_completion_tokens` 替代旧的 `max_tokens`（`_uses_max_completion_tokens`，`:89-106`）。
 
 ## 记忆写入
 
@@ -156,3 +158,4 @@ mem0 没有 agent 循环，它是被 agent 调用的库：模型只在 `add()` �
 
 - 2026-10-30 初版：基于 commit `26cdefb` 完整成文。覆盖 V3 加性抽取管道（八步）、实体链接存储模型、三信号融合检索、作用域隔离与各扩展面；标注了与旧版 ADD/UPDATE/DELETE 算法和旧图数据库支持的差异。
 - 2026-10-31 基于 commit `753496c` 补充：update 语义收紧为"永不重建已删除记忆"——向量库 update 契约改为纯更新（记录不存在返回 False、上层抛 ValueError），各后端实现去掉"更新或插入"行为（PR 7787）。
+- 2026-11-25 基于 commit `8096993`（窗口含 PR 7939）补充：模型接入节新增 OpenAI 参数保护段——横杠连接的 gpt-5-\* 系列与整个 gpt-6 家族按推理模型处理（请求不带 temperature/top_p），gpt-5/gpt-6 开头的型号改用 max_completion_tokens。

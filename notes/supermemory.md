@@ -4,13 +4,13 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `fa2af93`（2026-11-22） |
+| 笔记基准 | commit `4fdfbe4`（2026-11-24） |
 
 Supermemory 自我定位是"State-of-the-art memory and context engine for AI"（`README.md:10`），GitHub star 约 3.1 万，在记忆类项目里排前四。它卖两件事：记忆（从用户数据里形成可复用的用户画像和事实）和上下文（把相关内容压缩后注入模型上下文），README 里给出的指标是 "95% Recall@15 with a 99.4% context reduction"（`README.md:32-33`）。
 
 读这份笔记前必须知道一个事实：**记忆引擎本体不在这个仓库里**。官方自托管文档写明："The SDKs and other components in the public repository are open source; the downloadable self-hosted server binary is built from a separate, non-public codebase"（`apps/docs/self-hosting/overview.mdx:20`）。仓库里开源的是三样东西：MCP（Model Context Protocol，模型接外部工具的标准协议）服务端全套源码（`apps/mcp`）、面向各 AI 框架的接入胶水（`packages/tools`）、引擎数据模型的类型镜像（`packages/validation`），外加一套非常细致的官方文档（`apps/docs`）。这决定了这篇笔记的读法：它一半讲代码，一半讲"从接口契约和数据模型反推引擎的设计判断"，每个论断会注明证据来自代码还是文档。
 
-这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `fa2af93`（2026-11-22）。
+这份笔记按问题组织，不按 supermemory 的开发时间线：每个问题讲清 supermemory 现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。笔记起于 commit `a619e27`（2026-10-29），跟进到 commit `4fdfbe4`（2026-11-24）。
 
 ## 它要解决什么问题
 
@@ -26,7 +26,7 @@ Bun + Turbo 管理的 monorepo（`package.json:16` 用 Bun，不用 npm/pnpm）�
 - `packages/tools`——`@supermemory/tools`：AI SDK、OpenAI、Mastra、VoltAgent、Claude（memory tool 桥接）五个框架入口，核心是 `withSupermemory` 中间件。
 - `packages/validation`——引擎内部数据模型的 Zod schema（TypeScript 的校验库定义）镜像。注意这是内部模型不是公共 API：里面有 v5 文档已弃用的字段名，读它时要当成"引擎存了什么"的参考，不当成"API 长什么样"的规范。
 - `apps/docs`——文档站（Mintlify），本笔记的重要证据来源，标注"文档证据"处均出自这里。
-- 其余：`apps/web`（跳转控制台的壳）、`packages/memory-graph`（图谱可视化组件）、`packages/` 下五个 Python 包的源码——`openai-sdk-python`、`pipecat-sdk-python`、`livekit-sdk-python`、`cartesia-sdk-python`、`agent-framework-python`，各是独立的 PyPI 包，作用与 TypeScript 侧的 `packages/tools` 相同：把记忆注入与回写包进框架中间件。
+- 其余：`apps/web`（跳转控制台的壳）、`packages/memory-graph`（图谱可视化组件，0.3.0 起带服务端取图助手）、`packages/` 下五个 Python 包的源码——`openai-sdk-python`、`pipecat-sdk-python`、`livekit-sdk-python`、`cartesia-sdk-python`、`agent-framework-python`，各是独立的 PyPI 包，作用与 TypeScript 侧的 `packages/tools` 相同：把记忆注入与回写包进框架中间件。
 
 ## 主轴：先可搜、后成忆——写入分两阶段
 
@@ -52,6 +52,8 @@ Bun + Turbo 管理的 monorepo（`package.json:16` 用 Bun，不用 npm/pnpm）�
 检索 API：`POST /ns/{namespace}/search`（文档证据，`apps/docs/recall/search.mdx:57-61`）。关键参数：`searchMode` 默认 `hybrid`（记忆和原文块一起搜，可选只搜其一）；`threshold` 默认 0.3；`rerank` 支持 `order`（重排序，约加 100ms）和 `aggregate`（文档证据，`search.mdx:103-122,176-193`）；`rewriteQuery` 自动多路改写查询再合并；`filter` 是可嵌套到 5 层的元数据表达式（`:150-171`）；`include.forgotten` 可以把已遗忘的记忆显式召回（`:203`）。返回项带 `memory` 或 `chunk` 字段区分命中来源，图谱关系（parents/children/siblings）通过 `include.related` 带出。
 
 图谱的完整视图另有专门的读取通道：MCP 的 fetch-graph-data 工具从 `/ns/{namespace}/graph` 拉取整个 namespace 的节点和边——节点分 document、memory 两类，`source` 边从文档指向由它派生的记忆，其余边是记忆关系；工具内部把节点边折叠回"文档带嵌套记忆"的形状再返回（`apps/mcp/src/server/client/index.ts:177`）。这条路由是 v5 尚未写进 SDK 的隐藏接口（注释原话 "The namespace graph feed is a hidden v5 route, so it isn't in the SDK"，`index.ts:380`），分页用 cursor 而不是页码（`index.ts:381`）。memory 节点上原样带着版本链与遗忘字段（version/parentMemoryId/rootMemoryId/isForgotten 等），数据模型一节描述的 schema 在图接口上得到印证。
+
+这条图谱读取通道现在有了面向自建前端的开箱封装（PR 1919）：memory-graph 组件包 0.3.0 附带 `fetchMemoryGraph`，在你的服务端执行，跟随 cursor 至多 20 页拉完整个 namespace 的图（`MAX_PAGES`，`packages/memory-graph/src/server.ts:23,35-73`），API key 只留在服务端；`graphPageToDocuments`（`packages/memory-graph/src/graph-page.ts:9-61`）做与 MCP 工具同样的折叠。组件新增 `endpoint` prop，直接向你提供的路由 POST 取数，返回文档数组或原始图页都能渲染（`packages/memory-graph/src/components/memory-graph.tsx:93-113`）。
 
 开源代码里最有学习价值的是 `packages/tools` 的 `withSupermemory` 中间件——"带记忆的对话"完整流程，六步：
 
@@ -135,3 +137,4 @@ Python 侧的两个 SDK 沿用同一套语义，各自的框架约束带来不�
 - 2026-11-03 基于 commit `16ed414` 补充：MCP 的图谱读取切到 v5 namespace graph feed——fetch-graph-data 从 `/ns/{namespace}/graph` 读 document/memory 节点与 source/关系边（隐藏路由、cursor 分页，PR 1871），补入"检索与注入"节；同步修正两处因代码移动偏移的引用行号。
 - 2026-11-22 基于 commit `aad4a06`（`@supermemory/tools` 3.2.0）补充：三个包装器共用轮次记忆（`shared/turn-memory.ts`）以保住模型服务商的提示词缓存——按"用户消息文本 + 前一条助手回复指纹"冻结每轮检索结果、画像每会话只取一次后原样重发、注入只替换 SDK 自己写的块，首条用户消息变化即视为新会话清空缓存，检索 3 秒上限超时返回空记忆（PR 1906）。补入"检索与注入"节，并把 `addMemory` 持久化开关与三种模式的引用行号一并核对更新。
 - 2026-11-23 基于 commit `fa2af93` 补充：同一套轮次记忆语义移植到 Python 侧两个 SDK——`supermemory-openai-sdk` 的历史裁剪按键回映射、并发重复请求不覆盖首块、同步客户端召回跑独立线程事件循环、回写零重试且不占模型调用时间（PR 1913）；`supermemory-pipecat-sdk` 的 `inject_mode` 默认走缓存安全的 `user` 形态、检索结果渲染绝对日期、清理等待上限 `storage_drain_timeout`，并记下语音到语音模型只读开场上下文的硬限制（PR 1915）。补入"检索与注入"节；"仓库怎么分工"节补列五个 Python 包的实际位置。
+- 2026-11-25 基于 commit `4fdfbe4` 补充：memory-graph 组件包 0.3.0 附带服务端取图助手 `fetchMemoryGraph`——跟随 cursor 至多 20 页拉完整个 namespace 的图、API key 不出服务端，配套 `graphPageToDocuments` 折叠与组件 `endpoint` prop（PR 1919），补入"检索与注入"节。
