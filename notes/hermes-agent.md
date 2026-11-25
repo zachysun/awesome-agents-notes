@@ -4,7 +4,7 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | Python（桌面端与终端界面为 TypeScript） |
-| 笔记基准 | commit `b98c388a88`（2026-11-24） |
+| 笔记基准 | commit `51596aba34`（2026-11-25） |
 
 Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI 智能体（agent，能自主调用工具、多步干活的 AI 程序），主体用 Python 写成，桌面端和终端界面用 TypeScript，MIT 协议。规模不小：约 1.06 万个 Python 文件（其中 tests/ 下约 7500 个），测试约 3.9 万条。
 
@@ -16,7 +16,7 @@ Hermes Agent 是 [Nous Research](https://nousresearch.com) 开源的个人 AI �
 
 它的性格写在一个叫 SOUL.md 的人设文件里，核心是"直截了当"：回复长度跟问题的分量对等，一句话的问题答一句，做完的活只报改了什么、验证了什么、还剩什么，不铺垫不客套。这个文件本身也是"怎么给 agent 定性格"的一个好范本。
 
-这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一次复盘、一次到点任务"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `b98c388a88`（2026-11-24）。
+这份笔记按问题组织，不按 Hermes 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一次复盘、一次到点任务"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `0f02b4d434`（2026-09-21），跟进到 commit `51596aba34`（2026-11-25）。
 
 ## 它要解决什么问题
 
@@ -93,6 +93,8 @@ Web 端的 "Move to a single Hermes" 卡片（`web/src/components/BackendMigrati
 
 **导入配置模块不再有副作用**（2026-10-31 合并的一组修复）。`import hermes_cli.config` 或 `hermes_cli.auth` 这类导入动作，此前会顺带读配置文件——于是在一个持有配置锁的call stack里首次导入这些模块，就会在锁内触发文件读取，锁序问题（两把锁被不同的调用方按相反的顺序拿，谁也不肯先放，互相等到死）由此而生。现在的纪律是**导入零读取**：提供方环境变量的可选条目改为首次被读时才补算（`hermes_cli/config_defaults_env.py:9`，补算不持锁，并发首读各算各的、结果一致）；提供方注册表改为"首次读取前同步"（`hermes_cli/auth.py:260`，模块导入只装钩子，不碰配置）；插件模块用 PEP 562 的模块级 `__getattr__` 把重依赖推迟到真正访问属性时。连锁的几条间接读取也一并断掉：远端后端把凭据解析挪到抓取锁之外、持锁期间不打日志（`plugins/config_backends/remote/backend.py:58-66`）——日志格式化本身可能反过来要读配置；日志脱敏的格式化器只读预先记录在内存里的策略表（`agent/redact.py:139-159`），不在格式化路径上开配置文件；内置提供方目录的构建不读配置、不跑插件发现（`providers/__init__.py:829`，安全 worker 进程直接返回空目录）。"锁内绝不做可能反过来要锁的事"这条规矩，靠把每一条间接读取都断掉才成立。
 
+.env 的改写也换成了 shell 的读法（提交 e49fff4540 起 10 处，`hermes_cli/env_loader.py`）。`dashboard password` 移除旧密码行此前按行首前缀匹配——引号包起来的名字（`"DASHBOARD_PASSWORD"=...`）删不掉，文件里留下两份定义，后写的赢，密码改了像没改；现在整行赋值删除、多行值周围的赋值也整行处理。判定一个名字设没设也按词读：引号值后面的 `NAME=` 计为已设置；带引号覆盖的非 UTF-8 .env 在写 config.yaml 之前直接拒绝（提交 4c84e78629）；用户名模板的判定与清理用同一份名单（提交 32019114f2）；首次安装的 .env 模板对照它真正安装的那个网关服务判定（提交 7cf1c52f58）；已停止的 unit 其环境启动器可能设置 home 时拒绝动作（提交 23efc4e1db）；后端迁移会改变 .env 登录模板解析结果的也拒绝（提交 fa9202fe96）；读 systemd 给的环境时应用 unit 的 `UnsetEnvironment=`（提交 d95b398a58）。网关服务只捕获自己生成器抛的错误（提交 e015ff7274）。
+
 ### 文件缓存的新鲜度判据
 
 **拿文件属性当新鲜度判据，有个绕不开的死角。** 缓存要不要重读一个文件，最省事的判据是 stat 签名（大小、修改时间这类文件属性）：签名没变就沿用上次的结果。但同尺寸的原地改写若落在同一个粗粒度时间戳刻度内，mtime、ctime、大小、inode 全都不变——轮换过的 api_key、改过的端口就这样被旧解析结果顶住，进程活着多久旧值就用多久。配置解析缓存先改（提交 5f02a8c19e）：缓存键换成"后端版本 + 内容摘要"，摘要只在 mtime 落进可疑窗口（约两秒，与变更监视器共用的"疑似刚写完"判定，`utils.py:57`）内才补算，文件已稳定时不多花一次读取。随后这套判据推广到所有可能装着密钥、令牌、配对名单、路由或配置的文件缓存（提交 76f2fdb794）：auth 存储、已批准用户、webhook 路由密钥、MCP OAuth（开放授权协议）令牌文件、技能提示词清单等几十处换用同一个辅助函数——旧判据会放过"换钥匙"，新判据用一次便宜的内容读取保底。边界跟着补齐了三处：冻结配置快照的 worker 不为算摘要打开 config.yaml——worker 里不许碰档案文件，"最近写过"的判定取 mtime 与 ctime 中较晚者，因为 `cp -p` 一类操作会恢复旧 mtime 而 ctime 不会（提交 6f37cc8aae）；stat 成功却读不了的文件（权限 000、stat 与取哈希之间被删），摘要退化为一个错误名、必定不命中，让调用方自己的读取路径按原有恢复逻辑处理错误，而不是在算缓存键这一步就抛异常（提交 82d5c0ae81）；签名要存起来、留到以后某个时刻或下个进程再比对的场景，一律总是算摘要——可疑窗口里存下的空摘要会在下次比对时被误判成"文件变了"，白白多算一次（提交 f09d03dfe2）。
@@ -138,12 +140,12 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 - **对话进行中绝不改动已有上下文**（Agent 循环的两条硬性消息不变量之一）；
 - **工具清单在多通道之间字节级固定**（pin 机制，见"工具系统"）；
-- **记忆是冻结快照加实时副本的双状态**——写入立即写磁盘，提示词纹丝不动（见"学习循环"，那里算了一 处缓存经济账）；
+- **记忆是冻结快照加实时副本的双状态**——写入立即写磁盘，提示词纹丝不动（见"学习循环"，那里算了一处缓存经济账）；
 - **会话中途生效的技能经一次性增量提示到达模型**，而不是重建提示词索引（见"学习循环"）；
 - **用户明确指定的模型 ID 原样保留**，模糊纠正是被真实事故否决的（见"模型接入"）；
 - **压缩是唯一的例外**——不压缩就超窗，两害相权取其轻（见"Agent 循环"）。
 
-给这个不变量算一 处账就知道它为什么排第一：如果每写一条记忆就刷新系统提示词，缓存从第一个字节起全部失效，整个会话要重新读一遍、按正常价格计费——省下的只是 2200 字符的容量管理，扔掉的是几万 token 的缓存，一次写入的隐性账单比整轮对话的增量成本还高。所有便利功能都要先过这道审查：你注入的每个字符，用户都在用真金白银付它的缓存失效。
+给这个不变量算一处账就知道它为什么排第一：如果每写一条记忆就刷新系统提示词，缓存从第一个字节起全部失效，整个会话要重新读一遍、按正常价格计费——省下的只是 2200 字符的容量管理，扔掉的是几万 token 的缓存，一次写入的隐性账单比整轮对话的增量成本还高。所有便利功能都要先过这道审查：你注入的每个字符，用户都在用真金白银付它的缓存失效。
 
 长会话在提示词更新上后来开了一个**显式的口子**（提交 e240d617e8）。此前继续中的会话每个回合逐字节重放存量系统提示词——网关每次从会话行恢复，热的缓存 agent 留在内存里——所以 SOUL.md 的修改、新增或改动的技能、项目上下文的变化，只能等 `/new` 才到达，而 `/new` 连历史一起扔掉；推送了 profile 更新并重启网关的操作者，没有任何办法让存量会话采用新提示词。现在 `hermes sessions refresh-prompts`（可指定会话、可 `--json`）在档案的 state.db 里记一个刷新代数（一个计数器统一排序全档案与单会话的请求）；继续中的会话在下一回合开始时对比这个代数与会话 model_config 里盖的章，存量提示词更旧就照 Bot Chat 能力刷新的先例重建：先恢复 tools[] pin，清掉技能提示词缓存与快照，经 `_build_system_prompt` 重建（重载记忆、重渲染插件段落，与压缩边界同一套动作），缓存断点记为既有的 `system_prompt_rebuild` 原因，`on_session_start` 不触发，新字节与新代数持久化、之后的回合照旧逐字节恢复——一次请求只断一次缓存。
 
@@ -157,7 +159,7 @@ Hermes 把"会话期间提示词逐字节稳定"当成最高不变量：不改�
 
 缓存到底还热不热，此前只有零散的信号可看。现在有一只专门的时钟在记（提交 4a89bc6c02）：`agent/prompt_cache_clock.py` 在每次请求后记录线上真实发生的缓存层级——每个成功尝试记录服务商响应所证明的层级（`normalize_usage` 保留 `cache_write_by_ttl`），`cache_window()`（`agent/prompt_cache_clock.py:548`）对"现在还热吗"给出唯一应答；路由按 provider、规范化 base_url、model 三元组区分，各走各的窗口；`ProviderProfile.prompt_cache_max_ttl` 把服务商的缓存天花板写成数据（Nous Portal 的上游七分钟后丢 1h，档案里就写 `5m`，`agent/prompt_caching.py:207` 的注释说明了缘由）。窗口状态持久化为 `sessions.prompt_cache_clock`（一段 JSON，走既有的 token batch 写入，`hermes_state_usage.py:314`），恢复的会话带着上次的状态接着算。`/context` 的显示相应分四档：warm until / may still be warm until / expired / unknown。
 
-这个模型随后被六 处修正磨准（提交 58886fc81e、453d6b9fb2、270d6dfd08、4162ecf11f、e612fbedc6、08e08386f9）。"过期时间 = 最后触碰 + 层级"对 OpenAI GPT-5.6+ 不成立——一次读取把覆盖刷新到至少其后的 30 分钟、12h 的写入期限不因读取重启，于是窗口带 `guaranteed_until` 与 `estimated_until` 两个终点、每层有各服务商的刷新规则；原地归档（剪枝、微压缩）不动压缩计数，时钟改把自己的本地改写计数记入见证；worker 读代数改走属主在 usage 回执里盖的章，避免一次必须写日志的读取；时钟的存储读取全部尽力而为，失败报 unknown，一次成功的应答不再因此弄丢；档案天花板改为 keyword-only 参数，插件子类的位置参数槽不被挤动；恢复时的"假定窗口"回退只给计数器显示确实读写过缓存的会话——一条只失败过的 OpenRouter 检测会话不再凭错误行恢复出一个 1h 窗口。
+这个模型随后被六处修正磨准（提交 58886fc81e、453d6b9fb2、270d6dfd08、4162ecf11f、e612fbedc6、08e08386f9）。"过期时间 = 最后触碰 + 层级"对 OpenAI GPT-5.6+ 不成立——一次读取把覆盖刷新到至少其后的 30 分钟、12h 的写入期限不因读取重启，于是窗口带 `guaranteed_until` 与 `estimated_until` 两个终点、每层有各服务商的刷新规则；原地归档（剪枝、微压缩）不动压缩计数，时钟改把自己的本地改写计数记入见证；worker 读代数改走属主在 usage 回执里盖的章，避免一次必须写日志的读取；时钟的存储读取全部尽力而为，失败报 unknown，一次成功的应答不再因此弄丢；档案天花板改为 keyword-only 参数，插件子类的位置参数槽不被挤动；恢复时的"假定窗口"回退只给计数器显示确实读写过缓存的会话——一条只失败过的 OpenRouter 检测会话不再凭错误行恢复出一个 1h 窗口。
 
 缓存的保温与过期随后收进**一个生命周期控制器**（提交 16099a4dbb）：`agent/prompt_cache_lifecycle.py` 拥有每个过期前决策点的决定，替代了旧保温器的调度器与旧过期压缩的判定（`agent/prompt_cache_warmer.py` 与 `agent/cache_expiry_compaction.py` 两个文件删除）。规则按会话的性质分家：一次真实请求打开 3 次 keep-alive 的额度；人打字的聊天（CLI、TUI、桌面端、消息平台）空闲时继续保温，机器节奏的会话（subagent、side agent、fork、自动化来源）只在工具运行时保温。
 
@@ -286,7 +288,7 @@ flowchart TD
 
 **工作目录被删掉的本地会话不再卡住**（提交 0ee90ecc4b）。此前包装脚本的 `cd` 失败、exit 126，每次调用都一样，重启网关才解，报错的 chmod 提示还指错方向。execute() 现在在构建包装前经 `_usable_cwd()` 解析有效 cwd（`tools/environments/local.py:1186`；本地环境把死目录换成 `_resolve_safe_cwd` 找到的最近可用祖先，`tools/environments/local.py:205`；沙箱不动），并在工具结果里带一次性的 `cwd_fallback` 提示，后台 spawn 也算——模型知道相对路径从此在别处解析；会话记录从下一个观测到的 pwd 愈合。这轮容错随后铺满各执行面（2026-11-18）：工作目录被删时只有终端命令跟随回退，文件工具保持严格路径、对缺失目录直接报错（提交 e979ba31ac）；后台会话与后台命令同样经过 `_resolve_safe_cwd` 解析启动目录（`tools/process_registry.py:1191`），回退发生时把实际用的目录写回会话（`tools/process_registry.py:1288-1289`）；沙箱里的任务删掉自己的工作目录后任务跟踪不再跟着失效（提交 5d4f397214）；Docker 执行统一从稳定的工作目录启动，长驻容器从 `/` 启动（提交 cd664e5abf、92d60d77f6）；`execute_code` 的每次调用把会话当前目录挡在它自己的临时目录之外（提交 962f885501）；启动目录已删的守卫与 /context 清单共用同一份判断（提交 92a157cf99）；回退发生时 cwd 标记只用于愈合记录，不再发布进工具输出（提交 065f5abbb3）。
 
-**kanban 完成边界上的 gh 子进程环境缩到 gh 自己的凭据**（提交 34e909b8b6）。此前 gh 子进程继承受理档案的整个密钥范围——multiplex 下这个边界可能跑在服务另一档案的进程里，gh 子进程就带着别人家的 provider 密钥执行完整次调用。现在按 `served_profile_child_env` 自己的契约来：保持 provider 清洗（`inherit_credentials=False`），只从目标档案自己的密钥范围补回 `GH_TOKEN` / `GITHUB_TOKEN` / `GH_CONFIG_DIR`（`hermes_cli/kanban_pr_acceptance.py:85` 的 `_gh_env`、`:78` 的键表）。后续四 处把边界磨齐（提交 21b9ed8f1c、b60a0fb8cb、1f55e6c8a5、27535b727a）：企业登录键保留、环境里的企业级 gh 登录丢弃、纯企业档案同样失败关闭到档案自有 pin、档案自己的代理与 TLS 变量保留。
+**kanban 完成边界上的 gh 子进程环境缩到 gh 自己的凭据**（提交 34e909b8b6）。此前 gh 子进程继承受理档案的整个密钥范围——multiplex 下这个边界可能跑在服务另一档案的进程里，gh 子进程就带着别人家的 provider 密钥执行完整次调用。现在按 `served_profile_child_env` 自己的契约来：保持 provider 清洗（`inherit_credentials=False`），只从目标档案自己的密钥范围补回 `GH_TOKEN` / `GITHUB_TOKEN` / `GH_CONFIG_DIR`（`hermes_cli/kanban_pr_acceptance.py:85` 的 `_gh_env`、`:78` 的键表）。后续四处把边界磨齐（提交 21b9ed8f1c、b60a0fb8cb、1f55e6c8a5、27535b727a）：企业登录键保留、环境里的企业级 gh 登录丢弃、纯企业档案同样失败关闭到档案自有 pin、档案自己的代理与 TLS 变量保留。
 
 **manage_connections 进了默认的工具搜索延迟清单**（提交 853ee49d6f）。这个工具每个请求占 1,563 token，而按 opt-in 遥测只有约 3% 的活跃安装在某天用到它（占工具调用的 0.03%）。第一次尝试失败的原因值得记下：目录里的第一句"Connect the user to apps."没提 MCP 服务器，弱模型改走终端去装（20 次任务错 18 次）；句子把两件事都写明后，三个被测模型上延迟工具都能在任务上被即时匹配。已知代价被接受：连接任务多花 1.2 到 2.2 次模型调用，因为延迟工具在调用前要多一次描述。工具被延迟时，连接卡片与 MCP 提示保留（提交 60f81635c2）。
 
@@ -333,7 +335,7 @@ flowchart TD
 
 模型可以调 `skill_manage` 工具自己创建和修改技能，复盘提示词会推它一把："大多数会话都至少该更新一点技能，什么都不写是错过学习机会，不是中立结果。"写法有硬标准（有测试强制执行）：描述不超过 60 字符；引用 Hermes 自己的工具名而不是裸 shell 命令；可复用的逻辑写成脚本，不让模型每次现写解析器；修正错误时直接改原句，不往下追加"更正：其实……"。
 
-**第四层：curator，技能的保洁员。** 技能会越攒越多，没人管的技能库会退化成垃圾场。curator（curator 意为策展人，`agent/curator.py`）是后台维护者：默认开启，每 7 天、且 agent 空闲 2 小时以上时检查一遍。它靠使用遥测（`tools/skill_usage.py` 记录每个技能的使用次数、被查看次数、被修改次数、最近活跃时间）自动转移状态：14 天不活跃标记 stale（过时），30 天不活跃移入 `.archive/` 归档目录。每轮执行完毕、`run.json` 与 `REPORT.md` 都写全之后，curator 触发 `post_curator_run` 钩子（`agent/curator.py:705` 的 `_notify_post_curator_run`、`:711` 走标准 lifecycle 面，`hermes_cli/plugins.py:206-208` 注册）：Python 插件与 shell 钩子都收到 `run_dir`、`run_json_path`、`report_md_path` 三个参数，返回值被忽略、回调抛错不影响 curator 轮——多档案的治理层（路由、归档覆盖、审计）可以反应，不必轮询日志目录（提交 8bc0880615d）。配套四 处把时序理顺：报告状态保存后才触发、shell 钩子可达且只在报告完整时触发、不重发上一轮的报告、dry-run 带标记（提交 f7efbd1c2a5、fd1cc1d1c4b、335256076ba、856e75808d1）。
+**第四层：curator，技能的保洁员。** 技能会越攒越多，没人管的技能库会退化成垃圾场。curator（curator 意为策展人，`agent/curator.py`）是后台维护者：默认开启，每 7 天、且 agent 空闲 2 小时以上时检查一遍。它靠使用遥测（`tools/skill_usage.py` 记录每个技能的使用次数、被查看次数、被修改次数、最近活跃时间）自动转移状态：14 天不活跃标记 stale（过时），30 天不活跃移入 `.archive/` 归档目录。每轮执行完毕、`run.json` 与 `REPORT.md` 都写全之后，curator 触发 `post_curator_run` 钩子（`agent/curator.py:705` 的 `_notify_post_curator_run`、`:711` 走标准 lifecycle 面，`hermes_cli/plugins.py:206-208` 注册）：Python 插件与 shell 钩子都收到 `run_dir`、`run_json_path`、`report_md_path` 三个参数，返回值被忽略、回调抛错不影响 curator 轮——多档案的治理层（路由、归档覆盖、审计）可以反应，不必轮询日志目录（提交 8bc0880615d）。配套四处把时序理顺：报告状态保存后才触发、shell 钩子可达且只在报告完整时触发、不重发上一轮的报告、dry-run 带标记（提交 f7efbd1c2a5、fd1cc1d1c4b、335256076ba、856e75808d1）。
 
 三条铁律写死在代码里：只动 AI 自己创建的技能，内置和商店装的技能不碰；**永不删除，归档是最重的动作，随时可恢复**；被用户 pin（固定）的技能豁免一切自动处理。归档前先打 tar.gz 备份。LLM 参与的深度整理（合并相似技能）默认关闭，需要显式打开——确定性的状态流转先跑，昂贵的模型操作按需上。
 
@@ -353,7 +355,7 @@ flowchart TD
 
 **跨会话检索。** 历史会话用 SQLite 的 FTS5 全文搜索（内建中文二元分词支持）召回，再让辅助模型总结。README 里还接了 Honcho 做用户画像建模（dialectic user modeling，用对话不断修正对用户的理解）。
 
-记忆自动加载的边界随后从"猜文字"换成"注册边界"（提交 085eb933d6）。清洗器找用户输入靠两条启发：最后一条 payload 页脚句子，加跳过尾部 setup-note 块——谁把 `[Skill setup note: ...]` 或页脚句子原样贴进对话，请求就被剪掉一部分或全部。网关现在注册它预置的精确脚手架（`agent/skill_commands.py:62` 的边界注释），清洗器在注册边界下刀，页脚启发只留给别的进程构建的回合；裸的自动加载（背后没有用户文本可清洗）直接跳过、长得像脚手架的用户文本保留（提交 580fb3c43c）；自动加载的技能正文在 provider 同步前清洗（提交 20efa1ec2c）。
+记忆自动加载的边界随后从"猜文字"换成"注册边界"（提交 085eb933d6）。清洗器找用户输入靠两条启发：最后一条 payload 页脚句子，加跳过尾部 setup-note 块——谁把 `[Skill setup note: ...]` 或页脚句子原样贴进对话，请求就被剪掉一部分或全部。网关现在注册它预置的精确脚手架（`agent/skill_commands.py:62` 的边界注释），清洗器在注册边界下刀，页脚启发只留给别的进程构建的回合；裸的自动加载（背后没有用户文本可清洗）直接跳过、长得像脚手架的用户文本保留（提交 580fb3c43c）；自动加载的技能正文在 provider 同步前清洗（提交 20efa1ec2c）。well-known 技能的索引即使不在 `/.well-known/skills/` 路径下，检查与更新也照常进行（提交 2fc4b42256）；裸的越路径 SKILL.md URL 仍归 URL 适配器处理（提交 c1e19ca2ed 的测试固定）。
 
 ## 会话搜索：跨会话的按需回忆
 
@@ -379,7 +381,7 @@ flowchart LR
 
 这层骨架随后补了一批加固：被垃圾回收的会话库对象由回收线程收回连接引用（提交 355fd3cb8b、94db31f57e、12c0b148a0、6157959be7、a2b96f9e53）；写循环的守卫包住每个必经点（提交 46d290382c）；写互斥尊重写耐心值与排队使用者（提交 1a515b1766）；读池耗尽时降级到被锁的写连接并按速率记录（提交 c2100ebc39）；注册表关闭时释放头部确认占用的文件描述符（提交 7a21a2d1f8）；文件被替换后新开的句柄用新文件（提交 855591dc56）；`state.db` 路径是符号链接时直接失败（提交 499db5e413）；网络文件系统上的 journal 模式策略随库携带（提交 ac7459e9b3）。
 
-**全文索引的损坏随后学会只伤害它自己**（提交 2c0bde027b）。此前一次 dashboard 搜索能把整个 profile 的会话存储拖到重启才恢复——而 state.db 本身完好（quick_check 通过）。根因在 SQLite 的行为：FTS5 在一条嵌套的排序语句里求值 `ORDER BY rank`，SQLite 把那条语句的错误掩码成主语句的代码，索引损坏的 bm25 于是以 `SQLITE_CORRUPT_VTAB` 的形态直达普通读路径。现在 rank 排序读把索引级损坏圈在搜索读取之内：损坏在失败的快照上诊断、重新校正以原子方式执行（提交 0316063447），只读搜索句柄按 fail-open 处理并在校正执行后记一次日志（提交 86ba5a8a52）；rank 探针遇瞬时 IOERR 重放读取而不锁存结论（提交 018d1f9c27），只有瞬时 IOERR 才重试、无结论的探针按失败关闭（提交 8bd953b770），未归因的损坏挂在探针自己的 IOERR 上（提交 5b6696a012），重新校正的决定在锁下重读（提交 09ded63c4f）；校正的修复让 pre-v3 发布重开过的 store 也能重新校正。同一批里还有一 处打开成本：桌面端与 dashboard 的每次会话读取此前把 state.db 打开两次——管理句柄在一条全新连接上跑声明 schema 检测、读取者另开一条；现在 `open_persistence_reader` 接受 `check_drift`，检测在读连接自己身上执行，打开与翻页的中位耗时快了约三分之一（提交 68bb692467）。
+**全文索引的损坏随后学会只伤害它自己**（提交 2c0bde027b）。此前一次 dashboard 搜索能把整个 profile 的会话存储拖到重启才恢复——而 state.db 本身完好（quick_check 通过）。根因在 SQLite 的行为：FTS5 在一条嵌套的排序语句里求值 `ORDER BY rank`，SQLite 把那条语句的错误掩码成主语句的代码，索引损坏的 bm25 于是以 `SQLITE_CORRUPT_VTAB` 的形态直达普通读路径。现在 rank 排序读把索引级损坏圈在搜索读取之内：损坏在失败的快照上诊断、重新校正以原子方式执行（提交 0316063447），只读搜索句柄按 fail-open 处理并在校正执行后记一次日志（提交 86ba5a8a52）；rank 探针遇瞬时 IOERR 重放读取而不锁存结论（提交 018d1f9c27），只有瞬时 IOERR 才重试、无结论的探针按失败关闭（提交 8bd953b770），未归因的损坏挂在探针自己的 IOERR 上（提交 5b6696a012），重新校正的决定在锁下重读（提交 09ded63c4f）；校正的修复让 pre-v3 发布重开过的 store 也能重新校正。同一批里还有一处打开成本：桌面端与 dashboard 的每次会话读取此前把 state.db 打开两次——管理句柄在一条全新连接上跑声明 schema 检测、读取者另开一条；现在 `open_persistence_reader` 接受 `check_drift`，检测在读连接自己身上执行，打开与翻页的中位耗时快了约三分之一（提交 68bb692467）。
 
 存储过程本身也细了一轮（2026-11-18）：`bind_topic` 可以把会话绑定移动到同 profile 的另一个话题，移动带比较再交换的原子检查（提交 13d9072ecd、0385c130ce、dfc4341a73、1a69d6d68d）；准入记录有了取某状态最新一条的读取（提交 c44e6bb31b、0fb0273ee8）；房间驱动的一次读取能拿到一个房间的任务摘要与全部活跃行（提交 0e4cf80496、df18b551f6）；profile 重命名会把 API 绑定与本地策略一起移走，穿过压缩对话的重命名落在正确的会话上，轮换式手动压缩会把对话记录一并移交（提交 d9f42a5c07、9ab1345662、458a3f80f4）；列表预览在展示前修剪开头空白（提交 65cca66545）。schema 推进到第 33 版，新增 `sessions.prompt_cache_clock` 列（`persistence/sqlite/_schema_ddl.py:74`），提示词缓存时钟随之改从 SQLite 侧读取（提交 a4d4026690、2450bffa31、df48af627d、ab448ea16b）；回合相关的常量与辅助函数抽成了独立的 `session_rules` 包（提交 b945f98433、b4419c78ea、db427b05c9、866436dc13）。
 
@@ -409,7 +411,7 @@ app 在它上面设的提醒、心跳与排队的后台结果跟着它走（提�
 
 另一头的问题是**没人看的会话怎么结束**（提交 b1e7bd0b7c）：CLI、TUI、桌面端或 oneshot 会话的最后一个查看者消失而没留结束原因（终端被杀、连接断掉、网关停止）时，会话行此前永不结束，每次启动都要加载有史以来全部本地回执。现在网关装一个宽限计时器（`sessions.orphan_end_grace_s`，默认 300 秒，设 0 禁用），到点安装已持久化的待决关闭——会话行只在运行中的回合结算后才结束，回合与它的异步委托永不被打断。
 
-**标题与压缩谱系的边界随后理清**（提交 5fe61db64a、8a8a8546dc、94bdfe8400、eb408a70c8、83db312aeb、57c9569047）。改名重定向到活尖之后，每个压缩段都能对那个尖改名，防覆盖的围栏因此覆盖整条谱系——拿着已结束段旧副本的客户端不再盖掉尖上更新的名字；经任何一段发起的改名推进整条谱系的 revision；谱系级的改名清除逐行走 `_set_session_title_in_transaction`，Bot Chat 守卫拒绝时整笔写入回滚——此前的裸 UPDATE 绕过守卫，隐藏的祖先丢了名字、机器人开起了新聊天；经已结束段的清除也清理列表上的回退名；改名释放出的名字保留自己的 revision 推进。CLI 侧配了一 处：经典 CLI 终生持会话的创建 ID，压缩把活段与标题一起挪到新行，状态栏、字形布局顶线与 `/title` 从此读压缩尖上的标题。
+**标题与压缩谱系的边界随后理清**（提交 5fe61db64a、8a8a8546dc、94bdfe8400、eb408a70c8、83db312aeb、57c9569047）。改名重定向到活尖之后，每个压缩段都能对那个尖改名，防覆盖的围栏因此覆盖整条谱系——拿着已结束段旧副本的客户端不再盖掉尖上更新的名字；经任何一段发起的改名推进整条谱系的 revision；谱系级的改名清除逐行走 `_set_session_title_in_transaction`，Bot Chat 守卫拒绝时整笔写入回滚——此前的裸 UPDATE 绕过守卫，隐藏的祖先丢了名字、机器人开起了新聊天；经已结束段的清除也清理列表上的回退名；改名释放出的名字保留自己的 revision 推进。CLI 侧配了一处：经典 CLI 终生持会话的创建 ID，压缩把活段与标题一起挪到新行，状态栏、字形布局顶线与 `/title` 从此读压缩尖上的标题。标题生成的失败也学会说话（提交 8abe5a0c50、179c24c082）：截断的回复清理后剩不出可用标题时发出警告，警告指名真实的结束原因、不再把未经核实的截断当原因。
 
 Gemini 4 进了目录（提交 845acdd9e9、0eeb0f4adf、7fa511e403、5b3cb3059f、1b3035cdb0）：`gemini-4-neon` 带官方价格快照（每百万 token 输入 3 美元、输出 15 美元、缓存读 0.15 美元），`gemini-3.8-flash` 保持静默默认；Neon 与 Hydrogen 在 xhigh、max、ultra 档位映射到 xhigh，继承 1M 上下文、单请求 64K 上限、长解码续写与 Interactions API 路由。Vertex 配置应用同一套档位步骤，模型集合与档位步骤移到 `agent.reasoning_effort` 供两个配置共用，Argon 与 Carbon 仍封顶在 high（`agent/reasoning_effort.py:95`、`:97`）；Vertex 没有 `/models` 路由，选择器只显示静态列表，顺序镜像直连 Gemini 列表、`gemini-3.8-flash` 保持首位。
 
@@ -480,7 +482,7 @@ MCP OAuth 的发现对现实世界的拼写宽容了一格（提交 a060d649d9�
 
 **路由身份只有一份清单。** 判断"哪些模型配置项属于路由"（改了配置要不要换路由），以 `gateway/session_route_identity.py` 里的 `ROUTE_BOUND_KEYS` 为唯一清单，覆盖路由、线上协议、上下文窗口和凭据四类（提交 d9c9fcf61d）。此前有三份手写清单（启动覆盖、`/model` 修改、旧配置迁移各一份）而且互不一致（`context_length`、`api_key_from` 的归属各说各话）——判断只有一个出处，才不会三处答案不同。
 
-**路由的"经验"也跟着路由走**（提交 344de92b596 起 8 处）。agent 上有四个标志记录"当前路由拒绝过什么"：reasoning effort 被路由 400 拒过就整段会话不再发 reasoning 字段、disable 被拒就不再降档、要求最低 effort 的路由把 disable 升级为 low、stream_options 被拒的端点不再要流式用量。这些判定此前从不重置——`/model` 切换、回退激活、主路由恢复、凭据轮换换了端点之后，新路由继承旧路由的败绩：吃得下 reasoning effort 的模型被剥掉 reasoning，报流式用量的 provider 丢了 token 结算。新模块 `agent/route_verdicts.py` 把这份清单收拢（`agent/route_verdicts.py:23` 的 `ROUTE_VERDICT_FIELDS`、`:28` 的 `reset_route_verdicts`），四个路由变更点统一调用：switch_model（`agent/agent_runtime_helpers.py:2250`）、回退激活与凭据轮换（`agent_runtime_helpers.py:1177`）、凭据刷新与传输恢复（`agent/client_lifecycle.py:570`、`:648`）——其中按归一化端点判断，端点真的变了才重置、同宿主刷新保留（`:39` 的 `reset_route_verdicts_if_moved`）。判定也不白扔：离开主路由的跳步把判定快照进主路由的存档、恢复时带端点戳，仅当凭据池轮换后仍落在同一端点才放回（`client_lifecycle.py:782-783`）——主路由的败绩不传给下一个主路由，回主路由也不必拿失败请求重新学一遍。配套三 处把一次性修复结算改细：reasoning 与加密内容的一次性重试守卫按"路由访问"与"归一化端点"结算，端点变更或池恢复换端点时重新武装（提交 d1bba75653b、b6e475170e1、dbac9b34c4c）；
+**路由的"经验"也跟着路由走**（提交 344de92b596 起 8 处）。agent 上有四个标志记录"当前路由拒绝过什么"：reasoning effort 被路由 400 拒过就整段会话不再发 reasoning 字段、disable 被拒就不再降档、要求最低 effort 的路由把 disable 升级为 low、stream_options 被拒的端点不再要流式用量。这些判定此前从不重置——`/model` 切换、回退激活、主路由恢复、凭据轮换换了端点之后，新路由继承旧路由的败绩：吃得下 reasoning effort 的模型被剥掉 reasoning，报流式用量的 provider 丢了 token 结算。新模块 `agent/route_verdicts.py` 把这份清单收拢（`agent/route_verdicts.py:23` 的 `ROUTE_VERDICT_FIELDS`、`:28` 的 `reset_route_verdicts`），四个路由变更点统一调用：switch_model（`agent/agent_runtime_helpers.py:2250`）、回退激活与凭据轮换（`agent_runtime_helpers.py:1177`）、凭据刷新与传输恢复（`agent/client_lifecycle.py:570`、`:648`）——其中按归一化端点判断，端点真的变了才重置、同宿主刷新保留（`:39` 的 `reset_route_verdicts_if_moved`）。判定也不白扔：离开主路由的跳步把判定快照进主路由的存档、恢复时带端点戳，仅当凭据池轮换后仍落在同一端点才放回（`client_lifecycle.py:782-783`）——主路由的败绩不传给下一个主路由，回主路由也不必拿失败请求重新学一遍。配套三处把一次性修复结算改细：reasoning 与加密内容的一次性重试守卫按"路由访问"与"归一化端点"结算，端点变更或池恢复换端点时重新武装（提交 d1bba75653b、b6e475170e1、dbac9b34c4c）；
 
 被拒流式的开关改按路由判定、重置到配置的种子值而不是 False（提交 bff4ba1ce01）；带门条件的单回合主路由恢复把端点戳判定放回快照（提交 0bfd8529b48）。同窗还补了一道认字的门（提交 6897399c1b）：认证失败在凭据刷新存活下来之后升级 fallback 链的判定，此前不看分类器的裁定——一个缺了 CLI 登录、换哪个提供方都修不好的失败（#132337）也会被硬推进 fallback 链挨个试；现在分类器的 `should_fallback=False` 裁定被尊重（`agent/turn_recovery.py:1941` 的条件），裁定退出的失败按终态关闭，不再做无效的降级。
 
@@ -530,6 +532,8 @@ JPEG 草稿缩放后超过 4000 万像素的图拒绝解码（`terminal_image.py
 Gemini 提供方插件随后有了自己的传输（提交 fbe9216c11）：Interactions API——Google 推荐的新接口、新能力首发地。插件经 `ProviderProfile.create_client` 自带客户端，按模型把每个调用送往 Interactions 或 generateContent；`providers.gemini.gemini_api`（含每模型形式）取 `interactions` / `generate_content` / `auto`。无状态（store:false）下完整历史作为类型化 steps 发送，压缩、分叉与换模型的行为与 generateContent 一致；思考签名走既有槽位、以 thought steps 重放；流式的 step 事件、思考摘要折叠进 completion token、带内错误映射到 HTTP 等价码。随后 auto 规则变了（提交 e4a0f8732b）：Gemini 3 及以上与 `gemini-*-latest` 别名默认走 Interactions（仅 AI Studio 主机）；Gemini 2.x 留在 generateContent（它靠 `thinkingBudget` 调思考，Interactions 没有这个字段），Vertex express 与代理主机同样留下。
 
 实测确认无状态 Interactions 的隐式缓存命中与 generateContent 相同（两个 30K 提示的会话从第 2 回合起缓存 27.9K）。目录随之扩（提交 5d1435e625、df7147573d）：Gemini 4 Carbon、Gemini 4 Hydrogen 及其 xhigh 思考层级。两笔小修收尾（提交 577dce84dd、61be8bf593）：finishReason 在工具调用认领 `tool_calls` 之前映射、Interactions 调用被截断结束时保留 length。fallback 的密钥也换了取法（提交 e35bb13f80）：在客户端构建之前就从凭据池挑好 fallback 的 key。
+
+Solstice（用户自己的 Gemini 订阅按用户配额登录的提供方插件，预发布状态、按名字登录后才可见）随后把推理整个搬到了无状态 Interactions API（提交 35ee312df8 起 14 处）：每个请求发往 `v1beta/interactions:createPerUserQuota`、`store: false`——此前走 v1alpha 的 generateContentPerUserQuota，拿不到思考摘要、按请求的思考档位与带签名的思考步重放。Interactions 线格式经提供方发现加载（提交 ae125744eb），流式辅助函数经发现的 gemini 插件取（提交 1337532afc）；SolsticeClient 改为继承 gemini 插件的 GeminiClient、通过新增的钩子换接自己的路线，钩子默认值保持 gemini 提供方原样；单请求上限 65536 输出 token、从不存储也从不续写。模型清单收窄到该端点实际服务的 ID（它的 /models 对用户令牌返回 403，清单只能硬编码；配额按模型计，Flash-Lite 排在最后当备胎），每个模型各发自己的思考档位（提交 a45d3b87df、d44fb03bb7——档位键按客户端发来的模型 ID 取）。思考配置经插件发布的 Gemini 辅助函数映射（提交 16fd059ad8、2d74d9409d、dbb3088d82），effort 与标题摘要真正到达模型。旧凭据行里的 v1alpha 基地址在请求时替换版本段；已下线的保存模型照发为默认模型（提交 73123e8263）；对这种传输过旧的 gemini 线格式提前拒绝（提交 24b148198e）；httpx 的每调用零超时按原样透传（提交 7f9c43176d）。
 
 Telegram 适配器的常量读取也改对了（提交 aa0400f06d、da753b1b2e、e75272d80e）：`python-telegram-bot` 是按需安装的，安装后只会重绑运行中的模块副本，任何从兄弟模块导入的 `ParseMode` 都会停在 `None`；现在发送草稿、vault-code 发送与卡片编辑都在调用时从 `telegram.constants` 读取，`ParseMode` 的导入移到"无 bot"守卫之后，依赖缺失时仍返回 `not_connected`（`plugins/platforms/telegram/telegram_flood_window.py:114`）。
 
@@ -581,7 +585,7 @@ lead 模式下，一条没指向任何人的人类新线程消息，先在 lead 
 
 响应侧一律头白名单、沙箱 CSP、禁缓存、重定向不出网关（`webapp_relay_proxy.py:57-58`）。中途启动即失败的 relay 配对机制（授权码加签名配对）被同一批提交整体删除——最终形态比第一版简单：凭据存本机、代理只转发。协议面配套三小块：第三方客户端可在 `session.create` 自报 `client {name, version}`（纯署名，不参与任何策略或审批，`gateway/session_client.py:20` 的校验、`:31` 的读取，`agent/system_prompt.py:96-99` 注入提示词）；本地控制套接字新增 `resolve-profile` 动词，客户端不必再启动 `hermes gateway attach --json` 就能知道哪个网关服务该 profile 及其端点（`gateway/control_resolve.py:18`、`:106`）；dashboard 认证的状态码语义修正（提交 3fe7d20c88e、11f59ff1175、b0eb36ba90f）：verify 阶段的令牌拒绝（受众不符、密钥未命中、他人的实例 ID）一律按认证失败走 401、刷新、重新登录的路径，传输层故障才保持 503——客户端不再把"令牌过期"误显示为"服务不可达"（`plugins/dashboard_auth/_shared.py:225`、`:261`）。
 
-**网关的 tickets 补上了桌面端本地连接真正要问的东西**（提交 71e07ef273、0ca6a15001）。`gateway tickets --serve` 对 purpose interactive 签发 host 范围的 WebSocket 票（存内 30 秒 TTL）——一个 SSH 客户端的一条套接字由此选中网关服务的每个档案；此类请求里指名档案按 invalid_request 拒绝。--serve 也能按请求行指名同一网关服务的另一档案，并签发 native-profile-create 与 native-profile-registry 票（`?profile=` 路由与档案增删改用的授权，向同一控制套接字索取）；不带 profile 参数的请求回答照旧。三 处把边界磨紧（提交 6125386930、52fe3b679c、c88ea00bc3）：null 档案拒绝、tickets 行与 served-profile 检查收紧、attach 回到不带 purpose 参数的旧问法、坏行与超长行不再关掉 --serve。
+**网关的 tickets 补上了桌面端本地连接真正要问的东西**（提交 71e07ef273、0ca6a15001）。`gateway tickets --serve` 对 purpose interactive 签发 host 范围的 WebSocket 票（存内 30 秒 TTL）——一个 SSH 客户端的一条套接字由此选中网关服务的每个档案；此类请求里指名档案按 invalid_request 拒绝。--serve 也能按请求行指名同一网关服务的另一档案，并签发 native-profile-create 与 native-profile-registry 票（`?profile=` 路由与档案增删改用的授权，向同一控制套接字索取）；不带 profile 参数的请求回答照旧。三处把边界磨紧（提交 6125386930、52fe3b679c、c88ea00bc3）：null 档案拒绝、tickets 行与 served-profile 检查收紧、attach 回到不带 purpose 参数的旧问法、坏行与超长行不再关掉 --serve。
 
 **browser_vault 的验证码进了聊天回合**（提交 a9b059e9da、e9d9b2b139）。网站在聊天平台驱动的登录里发短信或邮件验证码时，`enter_code` 此前只会答 prompt_unavailable——消息回合没有装验证码提示。网关加了会话验证码卡片（`gateway/session_vault_code_card.py:14` 的 `send_vault_code_prompt` 钩子）与各平台适配。Telegram 没有 bot 能打开的私有表单，验证码以普通消息到达：ForceReply 卡片对准回合作者，下一条文本在认证检查后、批处理前被截走，bot 删除它、把码交给 submit()、标记卡片、不构造 MessageEvent；别人发的或无关的群消息不会被当成码，bot 删不掉时贴提示请作者自行删除，等待期间平台调试日志里与码相关的记录被丢弃。Slack 走 Block Kit 私有模态：卡片按钮带不透明 token，只有回合作者在本工作区能打开，提交的值直达 submit()、卡片按钮随之移除，请求结束后再提交在模态里被拒；码永不张贴、回显或记日志。卡片字符串收进 `platform.shared` 供两个适配器共用（17 份语言目录）。内联 browser_vault 执行器也绑定了会话与回合身份（提交 4276c28b88、5113c7149e）。
 
@@ -589,7 +593,7 @@ lead 模式下，一条没指向任何人的人类新线程消息，先在 lead 
 
 **Desktop 回复的流式显示随后理顺**（提交 f40cd107c3、8b362a272e、e87a591d9b、23e5e79887、d5344b9895）。所有流式聊天平台上开 `show_reasoning` 时，回答不再边生成边流出——💭 推理块与回答合成同一条消息、推理在上，与非流式路径同一形态；此前的顺序是反的，回答先流式出现、推理在其后单独一条。Desktop 回复在其最后一个工具落定前就被流式发出的问题修复；收养存储回复的活行按流偏移丢弃迟到的尾部、只绘制一次；重连页面存储的回复完整绘制一次、不重复。冷启动恢复的输入体验另有几笔小修：恢复期间没有输入框时敲的键保住、且只进恢复指定的那个聊天，重新挂载的输入框聚焦后光标落在草稿末尾。Bot Chat 的输入框上方随后新增"等待队友"条（提交 0692eb8477 起）：机器人欠着队友交付的清单挂在会话顶部；失败轮询保留旧数据并标为过期；打开时不路由到发送者自己的会话；打开与忽略不误发输入框草稿。底层是网关新方法 `bot_delivery.list`（提交 6190457161）：只读列出机器人未结清的队友交付；排队在队友未答问题后面的交付保持 Queued 状态；不可读的队友回执让该轮轮询失败而不破坏整行；读路径走主程序使用的存储接口，只解析上次轮询之后新写的回执。
 
-**受管层的配置值现在真的能到安全判定手里。** 五 处修补围着同一个缺口：`url_safety` 的 `security.fake_ip_ranges` 与 `security.allow_private_urls` 此前只读原始配置，改经 `apply_managed_overlay` 后 `/etc/hermes/config.yaml` 里的管理员固定值能到达守卫，进程缓存与失败即拒的默认值不变（`tools/url_safety.py:142` 的解析顺序、`:166` 的 `_managed_allow_private_urls`、`:195` 的受管覆盖读取，提交 a3501a8b4a）。`tools/env_passthrough.py` 与 `tools/credential_files.py` 改用 `load_user_config_effective()`，管理员只写在受管层的 `terminal.env_passthrough`、`terminal.credential_files` 不再被丢弃（提交 2fe344ddd9）。受管固定值优先于环境变量与 profile 的旧拼写：`_managed_allow_private_urls()` 先读受管层的 `security.allow_private_urls`，再读旧的 `browser.allow_private_urls`，`null` 表示不固定，有固定值时双向决定守卫（提交 b04799a90d）。受管 `terminal.credential_files` 走与技能注册相同的读取守卫，`auth.json` 等主凭据存储不能通过配置挂载进沙箱，服务令牌例外保留（提交 999460cc57）。受管层的 `null` 也不再抹掉 profile 自己的 `true`——受管判定完成后，profile 的键从 profile 本身读取（`tools/credential_files.py:95`、`:174`，提交 2a68a3a94e）。这组改动的共同点是：受管层是"管理员固定值"，既不能被 profile 悄悄覆盖，也不能因为读错了来源而形同虚设。
+**受管层的配置值现在真的能到安全判定手里。** 五处修补围着同一个缺口：`url_safety` 的 `security.fake_ip_ranges` 与 `security.allow_private_urls` 此前只读原始配置，改经 `apply_managed_overlay` 后 `/etc/hermes/config.yaml` 里的管理员固定值能到达守卫，进程缓存与失败即拒的默认值不变（`tools/url_safety.py:142` 的解析顺序、`:166` 的 `_managed_allow_private_urls`、`:195` 的受管覆盖读取，提交 a3501a8b4a）。`tools/env_passthrough.py` 与 `tools/credential_files.py` 改用 `load_user_config_effective()`，管理员只写在受管层的 `terminal.env_passthrough`、`terminal.credential_files` 不再被丢弃（提交 2fe344ddd9）。受管固定值优先于环境变量与 profile 的旧拼写：`_managed_allow_private_urls()` 先读受管层的 `security.allow_private_urls`，再读旧的 `browser.allow_private_urls`，`null` 表示不固定，有固定值时双向决定守卫（提交 b04799a90d）。受管 `terminal.credential_files` 走与技能注册相同的读取守卫，`auth.json` 等主凭据存储不能通过配置挂载进沙箱，服务令牌例外保留（提交 999460cc57）。受管层的 `null` 也不再抹掉 profile 自己的 `true`——受管判定完成后，profile 的键从 profile 本身读取（`tools/credential_files.py:95`、`:174`，提交 2a68a3a94e）。这组改动的共同点是：受管层是"管理员固定值"，既不能被 profile 悄悄覆盖，也不能因为读错了来源而形同虚设。
 
 网关的监听地址多了一种形态（提交 f278702887、96257ebfc5、8f321cae19、bb55ef3add、5caf8d3342、d770aa5f38、0342ee18e6、be7874391a、79a1f8d2e9）。`webapp.host` 接受本机一个单播地址（局域网或 Tailscale，IPv4 或 IPv6）：网关在该地址与同一端口的回环地址上各监听一个 socket，两者共享同一个应用与同一份边界状态；登录要求与绑定 `0.0.0.0` 一致，`Host` 检查只接受该地址、回环名字与 Webapp 的公开主机名（`gateway/webapp_listener.py:193` 的单播判定、`:214` 的 `loopback_companion`、`:245` 的 `listener_plan`）。地址不属于任何接口、或回环端口被占用时两个 socket 都不保留，网关保持私有监听并给出原因；只接受接口能持有的单播地址，名称、其他回环地址、广播、组播、保留地址、`0.0.0.0/8`、IPv6 链路本地与 IPv4 映射地址继续拒绝。Linux 上绑定子网定向广播地址（如 /24 的 .255）成功不能证明地址属于本机，特定地址绑定时用 `psutil` 读一次接口地址、不属于本机则拒绝并返回 `EADDRNOTAVAIL`。
 
@@ -607,7 +611,7 @@ lead 模式下，一条没指向任何人的人类新线程消息，先在 lead 
 
 Ink TUI 的审批面板此前只显示换行后的前 10 行还写着"(full text above)"——第 11 行如果有危险内容，根本没上过屏——现在按 v 翻页并标出当前是第几行到第几行（`ui-tui/src/components/prompts.tsx:31-33`）。批之后也要留得住：Telegram、飞书、Teams 上点了审批按钮，整条消息此前被替换成只剩决定，共享群聊从此丢了"批的到底是什么"；现在 Telegram 用 `Message.text_html` 从消息实体重建原卡片再追加决定，超长时退回只写决定保证按钮失效、网络错误时不退回——那次编辑可能已生效，退回会把保留的正文又覆盖掉（`plugins/platforms/telegram/telegram_resolved_prompt.py:27-31`）；Teams 的按钮数据只带提示 id、完整命令预览留在适配器内存里按 id 存至多 256 条——长 CJK 命令曾让每个按钮带 2000 字符预览、卡片约 30 KB 超过 Teams 约 28 KB 上限而退化成纯文本（`plugins/platforms/teams/adapter.py:694-698`，提交 92c86afb1f、288c0c1cae、44678e5647）。
 
-审批卡的默认态随后整个翻了过来（提交 677e352ad2 起的一组）：每个审批请求生来就是 Deny-only——卡片只能拒绝，允许按钮要等网关确认"完整命令确实展示过"才出现（`gateway/platforms/base_exec_approval.py:127` 的 `render_exec_approval`、`:191` 的完整命令发送）；`tools/approval.py:197` 的卡片解析只结算卡片带的那个请求 id，无 id 的旧卡片点击什么都不结算、`/approve` 文字命令仍是逃生门。动机来自一个真实竞态：请求进了队列而渲染器还没盖上 Deny-only 标记的窗口里，一张旧的无 id 允许点击会把一个新排队、本该 Deny-only 的请求批掉——批准的授予从此挂在"命令全文可见"这个事实上，而不是挂在按钮存在上。配套三 处把展示链路补齐（提交 295c325c35、48e15ee81b、f0ac114d2d）：完整命令发送期间的点击只能拒绝、被截断的发送保持卡片 Deny-only，WhatsApp Cloud 硬编码的 Approve 按钮、QQ 恒建 allow-once 并把命令重切到 300 字符（尾部藏在批准按钮后面）、Matrix 仍打印 `!approve` 指令——三个渲染器都改为尊重 Deny-only 提示；截断或无法证明整条送达的拆分保留 `/approve` 回退的指令（提交 5aeb0ee1cd）。
+审批卡的默认态随后整个翻了过来（提交 677e352ad2 起的一组）：每个审批请求生来就是 Deny-only——卡片只能拒绝，允许按钮要等网关确认"完整命令确实展示过"才出现（`gateway/platforms/base_exec_approval.py:127` 的 `render_exec_approval`、`:191` 的完整命令发送）；`tools/approval.py:197` 的卡片解析只结算卡片带的那个请求 id，无 id 的旧卡片点击什么都不结算、`/approve` 文字命令仍是逃生门。动机来自一个真实竞态：请求进了队列而渲染器还没盖上 Deny-only 标记的窗口里，一张旧的无 id 允许点击会把一个新排队、本该 Deny-only 的请求批掉——批准的授予从此挂在"命令全文可见"这个事实上，而不是挂在按钮存在上。配套三处把展示链路补齐（提交 295c325c35、48e15ee81b、f0ac114d2d）：完整命令发送期间的点击只能拒绝、被截断的发送保持卡片 Deny-only，WhatsApp Cloud 硬编码的 Approve 按钮、QQ 恒建 allow-once 并把命令重切到 300 字符（尾部藏在批准按钮后面）、Matrix 仍打印 `!approve` 指令——三个渲染器都改为尊重 Deny-only 提示；截断或无法证明整条送达的拆分保留 `/approve` 回退的指令（提交 5aeb0ee1cd）。
 
 **安全拒绝的回合保留给显示、对模型隐去**（提交 52eef32905、ab3afc0b89、6ec9d85795，一天内三次迭代定形）。确定性安全过滤器拦下一个回合时，对话此前会被锁进拒绝循环：模型看不到自己的话被删了，原消息还在转录里，下一回合同一个触发词再把同一轮拦下，用户被反复拒绝。第一版把拒绝回合像 `/undo` 一样软删除——聊天解锁了，用户自己的消息也从界面上消失了；终版把"从模型上下文移除"与"从显示投影移除"拆开：被拒回合整体退出模型上下文（与 `/undo` 的软删除同一条路径，确定性过滤器不会再被触发），用户消息的行保留在显示投影里（`compacted = 1`，与被压缩行同一机制），边界行 ID 记进会话（`hermes_state_rewind.py:17` 的 `retain_refused_turn_for_display`、`:95-111`）；两类拒绝形态（工具结果拒绝与回合拒绝）都覆盖，跨界面一致（`agent/turn_failure_copy.py:85-90` 的 `content_refused` 复制）；遗留的已锁对话在升级后自动解锁。被拦的话不进模型，但要让人看见自己说过什么——移除的目标是"不再触发"，保留的目标是"可追溯"。
 
@@ -735,6 +739,8 @@ flowchart TD
 
 话题里出生的定时任务随后可以选每回合开新线程（提交 70a76e65ac）。可续的 cron 任务（attach_to_session / cron.mirror_delivery）此前只在来源没有绑定线程时才开新线程——一个守卫让 Telegram 话题里创建的任务把投递送回话题。`platforms.<p>.extra.cron_fresh_thread_per_run: true` 现在让新线程分支对投递到自己会话的任务压过来源话题；显式 `chat_id:thread_id` 指到别的聊天永不压过（提交 6e9b028081），非布尔值保持来源话题并警告。
 
+定时任务随后给插件开了一个调度口（提交 80d6bba3dc 起 6 处）：`cron.plugin_api`（`cron/plugin_api.py:1`）让插件调度具名任务并读取投递平台——任务设置的读取按 profile 一个读法（提交 feceed663e）、home 的读取与注册失败的报告各有一种说法（提交 030a6c439e）；投递平台的判定用触发那一次的任务设置，`ctx.cron_delivery_platforms` 暴露给插件（提交 a5a7a0784d）；`ensure_named_job` 从任务存储读名字（提交 5159f3be0d）；触发的投递快照与执行放在一起（提交 6a59537394）。对话式 /blueprint 保留 blueprint 自己的技能（提交 8fc0374447）。内置晨报对没有配置 Google 的用户不再失败、保持只读（提交 7ff4a059ec、b9b36c9337）。
+
 `hermes plugins config <name>` 让插件设置可以在终端里改（提交 63102706e8、65c9b93e0c、595accf662、b1ef9bea69）：列出 `config_schema` 与 `requires_env` 声明的所有设置及当前值，逐项编辑（choices 与 bool 用选择器，数字与 JSON 做类型检查，密钥遮蔽），通过 `save_plugin_settings` 写 `config.yaml`、通过 `PUT /api/env` 写 `.env`，无 TTY 时只打印（`hermes_cli/plugins_settings/cli.py:222`）。环境字段使用平台清单自己的分类（`password`、`secret` 或令牌形状的名字），Discord 一类 `password: true` 的令牌只显示"已设置"、编辑时遮蔽；YAML 解析出非 JSON 值、或解析失败的列表与映射输入被拒绝并给出可读提示。终端安装结束后会列出新插件的声明设置并询问是否现在编辑，默认否，有必填项为空时默认是并列出它们；脚本、`HERMES_NONINTERACTIVE` 与简要安装向导保持只打印一行指引。空白密钥按未设置处理，`has_value` 要求非空值。
 
 目录插件的兼容性有了预警（提交 d45aac385e、04f2b88b70、2f1e8f6010、509a92c0aa、f998a982cb）：新增 `scripts/ci/catalog_core_imports/`（31 个分片、约 780 KiB）记录 2,514 个目录插件在其固定 sha 上对 Hermes 的全部导入，解析器复用 `plugin_validate_private_imports.hermes_import_sites`；检查只用 git 对象在 base 与 merge 提交上解析被改模块文件涉及的导入，不联网、不执行插件代码，命中时列出插件、文件行号与导入。`try` 的分支逐个判断：body 与每个 handler 各算一个分支，只有某个分支的 Hermes 导入全部解析成功时插件才算保留该导入；嵌套 try 的回退留在持有它的分支内；模块级 `__getattr__` 只回答它在导入期代码、钩子本身与按名调用的模块函数里拼出的名字。检查从阻塞改为警告：每个插件一条注解、作业摘要与 CI 评审评论各报一次，列出丢失的核心名字、是否私有、是否已在 `plugin_api.json`、受影响的插件与仓库位置。索引是固定 sha 的快照，插件在该点之后新增的导入要等每日重建，检查只判断名字是否存在、不判断行为变化。
@@ -755,13 +761,13 @@ flowchart TD
 
 暂存作业按产物编号下载、要求恰好一个正整数编号；暂存前拒绝目录、符号链接、隐藏条目与非构建包文件，只接受录制器真正读取的那一个包与相邻的块映射文件；解压与录制放进不含存储凭据的步骤；暂存步骤改从控制器检出运行（原先把控制器目录放进模块路径，但解释器优先从工作目录导入，实际仍跑被声明提交的代码）；用显式声明文件取代"读源码文本判断能力"——旧做法在源码里出现标签读取函数就判定支持，而被构建的提交恰好有读取函数、没有打包逻辑，构建因此失败。保留期设为 90 天，默认分支不是 main 时退回无标签构建，分支跑不了控制器时在创建标签之前拒绝。代价是同一件事现在有三份状态需要一致：标签形态、声明消息的精确键集合、被构建树自己声明的打包能力；
 
-每次提交构建还多出四个作业。
+每次提交构建还多出四个作业。发布渠道随后分化出 stable 与 canary 两套页面，各自的硬边界有一串修复（提交 34e19902d0 起 20 余处）：stable 角色在 channel_releases CLI 里被拒绝、帮助只列 canary（提交 537e99ed6e、34e19902d0）；stable 键上的页面只被更新的 stable 页面替换，canary 页面写不进去（提交 f4785e7bee、12849ad777）；stable 的 macOS DMG 别名与下载页在晋级时发布（提交 4d4de7efb9），下载面收进一个有类型的所有者（提交 e2f4d4d6b8）；没有 ETag 的 stable DMG 拷贝源被拒绝、拷贝源在任何 feed 移动之前检查（提交 a906c2b033、274bc33a78）；feed 晋级由头部更新自己的顺序检查把关（提交 dbebd80427）；copy_object 有一次重试预算（提交 205fdca51b）；独立的 promote CLI 拒绝 stable 候选（提交 ff616309d5）；发布重跑不回填 stable 下载（提交 c1494b2ff2 的文档）。密封分发包（bundle，桌面与网关的密封载荷）两笔：载荷带上 WhatsApp 桥，缺桥的包在密封时失败（提交 79c00f3aa2）；修订没有的运行时树不再被打进归档（提交 1b39ecabee）。
 
 插件身份与加载边界也收了四轮。仪表盘按插件加载器的方式识别已安装插件，不再只看仪表盘清单里的名字（提交 edb6cf091b，`hermes_cli/web_server_dashboard.py:661` 的 `_PluginNameOwners`）：扫描用户、内置与项目三个根目录，读取每个目录"能应答的名字"（目录名、两种清单名），不运行插件代码；名字被另一个已安装插件占用时不注册并记录两个路径，启用只认插件独占的名字、禁用仍然匹配所有声明名。同名判定随后改成安装身份（目录、键、来源）而不是目录叶名（提交 bb06a61c87），项目插件不能顶掉用户插件的名字（提交 33b1955272），hosted 插件更新后按清单文件大小与修改时间重扫（提交 7f441df10c）。
 
-**列表不再导入未启用的插件。** 打开插件列表的上下文引擎分类、仪表盘的下拉选项、或任何列出可用调度器的地方，此前都会导入每个提到该接口的用户插件来读可用性——即使它只是被安装、或被禁用列表列出（提交 482bf3b351，`plugins/plugin_loader.py:186` 的 `list_category`）。现在只有被操作者打开的用户插件才被导入，其余仍以插件名与清单描述列出、状态为不可用。配套三 处：指名一个被禁用的插件时两条加载路径共用同一拒绝检查并指出重新打开的命令（提交 06f5ec11a9）；记忆提供者的列表不再导入被禁用的提供方（提交 1d4b208bda）；选择值指向内置实现时不再被当成选中了同名用户目录（提交 56b3d07d33）。供应商插件有一条更早生效的路径——它在到达通用加载器的拒绝检查之前就交给提供方发现，因此被召回的提供方插件每次查询仍会加载；现在导入前应用同一套离线检查，覆盖两种目录布局与交给插件宿主加载的情形（提交 d3765e47ea）。缓存文件里存放非 JSON 对象、移除条目的仓库地址是无法解析的 URL，这两类输入也不再中断整条加载链路（提交 97c6e90c4f、99e244aed4）。安装时还拒绝把包命名为提供方发现会扫描的保留目录：这样一个清单能把自己的包当提供方加载，而安装、列表、禁用三个界面都显示它未打开（提交 f1b687b8ce）；提供方插件没有启用条目也生效，安装提示因此改成"用禁用关闭"而不是"请启用"（提交 376097ea0e）。
+**列表不再导入未启用的插件。** 打开插件列表的上下文引擎分类、仪表盘的下拉选项、或任何列出可用调度器的地方，此前都会导入每个提到该接口的用户插件来读可用性——即使它只是被安装、或被禁用列表列出（提交 482bf3b351，`plugins/plugin_loader.py:186` 的 `list_category`）。现在只有被操作者打开的用户插件才被导入，其余仍以插件名与清单描述列出、状态为不可用。配套三处：指名一个被禁用的插件时两条加载路径共用同一拒绝检查并指出重新打开的命令（提交 06f5ec11a9）；记忆提供者的列表不再导入被禁用的提供方（提交 1d4b208bda）；选择值指向内置实现时不再被当成选中了同名用户目录（提交 56b3d07d33）。供应商插件有一条更早生效的路径——它在到达通用加载器的拒绝检查之前就交给提供方发现，因此被召回的提供方插件每次查询仍会加载；现在导入前应用同一套离线检查，覆盖两种目录布局与交给插件宿主加载的情形（提交 d3765e47ea）。缓存文件里存放非 JSON 对象、移除条目的仓库地址是无法解析的 URL，这两类输入也不再中断整条加载链路（提交 97c6e90c4f、99e244aed4）。安装时还拒绝把包命名为提供方发现会扫描的保留目录：这样一个清单能把自己的包当提供方加载，而安装、列表、禁用三个界面都显示它未打开（提交 f1b687b8ce）；提供方插件没有启用条目也生效，安装提示因此改成"用禁用关闭"而不是"请启用"（提交 376097ea0e）。
 
-删除 profile 后的写入边界继续收紧（提交 4fc866bae7、31a161a6d2）：绑定到已删除或改名 profile 的网关或插件进程，下一次写入不再用裸递归建目录把 profile 目录重建出来——平台适配器八处（线程计数、评论配对、加密存储、凭据文件锁、认证镜像、次生桥端口记录、入站媒体缓存）与插件宿主解压缓存、Discord 斜杠命令状态、bot 编号缓存、路由目录镜像都改走"命名 home 永不被创建"的边界函数。操作者显式指定的外部路径不走这条边界，避免在提权运行里对该目录做权限修复（提交 eee77ea20d）。桌面插件还可以自己运行某个 profile 的整个后端（提交 e7ce85259b）：插件经 SDK 声明"这个 profile 由我服务"，主进程做原生确认、只接受回环地址、拒绝另一个插件已在服务的或用户连到远程主机的 profile；该 profile 的路由条目写成远端模式，核心把它标记为"在别处运行"时本地网关不再启动，切换与重启表现为一个状态而不是断线；标记目录不可读时按"全部标记"处理，失败关在一侧。三轮评审修正分别处理了切换期间输入框与队列的持有时间、计划性重启时"重发所有被切断请求"造成的重复执行、以及切换失败时只还原自己写的那条路由。
+删除 profile 后的写入边界继续收紧（提交 4fc866bae7、31a161a6d2）：绑定到已删除或改名 profile 的网关或插件进程，下一次写入不再用裸递归建目录把 profile 目录重建出来——平台适配器八处（线程计数、评论配对、加密存储、凭据文件锁、认证镜像、次生桥端口记录、入站媒体缓存）与插件宿主解压缓存、Discord 斜杠命令状态、bot 编号缓存、路由目录镜像都改走"命名 home 永不被创建"的边界函数。操作者显式指定的外部路径不走这条边界，避免在提权运行里对该目录做权限修复（提交 eee77ea20d）。桌面插件还可以自己运行某个 profile 的整个后端（提交 e7ce85259b）：插件经 SDK 声明"这个 profile 由我服务"，主进程做原生确认、只接受回环地址、拒绝另一个插件已在服务的或用户连到远程主机的 profile；该 profile 的路由条目写成远端模式，核心把它标记为"在别处运行"时本地网关不再启动，切换与重启表现为一个状态而不是断线；标记目录不可读时按"全部标记"处理，失败关在一侧。三轮评审修正分别处理了切换期间输入框与队列的持有时间、计划性重启时"重发所有被切断请求"造成的重复执行、以及切换失败时只还原自己写的那条路由。插件在别处服务 profile 时，宿主这一侧不再重复运行同一个 profile（提交 fe9a4b58ec）：插件声明服务的 profile 由插件宿主独占，宿主自己的网关不再把它再起一份。
 
 ## 插件、安装与分发
 
@@ -779,9 +785,11 @@ flowchart TD
 
 pm 环境的出身随后有了可证明的标记（提交 a2350b2643、11fb153bce）：PM 创建的每个 venv 在 pyvenv.cfg 写 `hermes-pm-built = true`，外部 Python 建的 checkout venv 不再被误认成 PM 时代的安装、把没记录选择的数据根的 extras（`all` 连同它包含的一切）带进每一次同步；整选同步的 pre-PM 携带归 `sync_venv` 一处所有（`pm/extras.py:504` 的 `first_generation_selection`）。
 
+**doctor 的 PATH 检查按 shell 的读法重写了**（提交 68eade8dfe 起约 25 处，词法分析在 `hermes_cli/doctor_platform.py:726` 的 `_shell_words`）。此前的检查用逐行正则找 PATH 行，shell 真实的语法让它误报成一线：`PATH=x cmd` 只为一条命令临时设 PATH，被当成永久修改；`PATH+=` 追加、`>&` 与 `&>` 重定向、`$(...)` 与反引号、双引号里不转义的反斜杠、"只有成词才开注释"的 #、与 PATH 无关的 `PYTHONPATH=`，各有一类误判。判定基准也从"配置文件写了什么"换成"进程实际继承了什么"（提交 68eade8dfe、4134fe929a）：启动器自己垫上的前缀计入（提交 02b71ab84f），.env 的 PATH 行替换之前的继承值保留（提交 48bcfb5ba8，`pm.install.activate` 同步修复，提交 793483bacb）。`~/.local/bin` 按完整的 PATH 条目在任何 home 拼写下匹配，`~/.local/bin/<dir>` 与 `~/.local/bin-tools` 这类前缀同名目录不算（提交 0b4960d25f、0300313a3f、cfe71d3226）；读不了的 bash 登录文件跳过而不是误读，bash 实际读哪个登录文件就认哪个（提交 66e141b408、e728e6f9ce）；fish 的配置按 XDG_CONFIG_HOME 读（提交 d42dd05aa5）；shell 留着不展开的 home 条目不计入（提交 5ecab798dd）；解析不了的 PATH 条目不再让检查停下（提交 55335a28a3）。启动器可以声明自己进程的安装状态目录（提交 4f676af2cf）；创建链接时同名的命令出现了就先检查再链接、绝不覆盖（提交 38e7dafa8f）；密封包的 CLI 链接被接受、`~/.local/bin` 不在 PATH 时给出警告（提交 51b93b31d5）。doctor 的检查从此说的是 shell 将来真正会做的事。
+
 **兼容与迁移。** 对外部插件的向后兼容走一张显式兼容清单（`COMPAT_MANIFEST.json`），仓库自己的代码和测试禁止使用兼容路径，CI 有专项检查。从 OpenClaw 迁移是一等公民：`hermes claw migrate` 自动导入它的人设文件、记忆、技能、审批名单和密钥，支持先预览再执行。存储重构把 `agent/message_content.py` 与 `agent/context_compressor_retry.py` 折叠进 `session_rules`/`turns.py` 后，按旧名 import 的目录插件加载失败——兼容层携带目录插件确实引用的回合辅助函数直到 v0.27.0（提交 b1db37d2b9、1f0103a89f），Honcho 记忆插件恢复注册（提交 6cc221d9ad）。桌面端的分发随后解决了一个 AppImage 特有的结构问题（提交 0a8e23bdf6 起 10 余笔）：AppImage 每次启动把自己挂载到一个新的 `/tmp/.mount_*`，捆绑载荷、`~/.local/bin` 的 CLI 链接与 Desktop 启动的网关全都运行在那个挂载上——应用一退出挂载就消失，CLI 链接悬空，网关因为解释器与扩展模块 mmap 自消失的挂载而在 30 秒内总线错误死掉；
 
-现在载荷从一份稳定的每构建副本运行，AppImage 的挂载路径被挡在网关环境之外、打开的 Desktop 与安装过的网关单元各自保留自己那份载荷副本、CLI 链接随新副本前进，打包检查比较符号链接目标、载荷缺失或与准备的不一致时打包失败。终端仿真侧一 处：PTY 里裸 LF 按本义处理（提交 84ee865bb2）——PTY 已在程序表示换行处发出 CR LF，孤立的 LF 应当下移一行、保留列；`convertEol` 强行把每个 LF 转成 CR LF，全屏 TUI 的光标寻址重绘（定位到缩进列、清除、发裸 LF 开始下一缩进行）从第 1 列重新开始，滚动重绘后画面错位。
+现在载荷从一份稳定的每构建副本运行，AppImage 的挂载路径被挡在网关环境之外、打开的 Desktop 与安装过的网关单元各自保留自己那份载荷副本、CLI 链接随新副本前进，打包检查比较符号链接目标、载荷缺失或与准备的不一致时打包失败。终端仿真侧一处：PTY 里裸 LF 按本义处理（提交 84ee865bb2）——PTY 已在程序表示换行处发出 CR LF，孤立的 LF 应当下移一行、保留列；`convertEol` 强行把每个 LF 转成 CR LF，全屏 TUI 的光标寻址重绘（定位到缩进列、清除、发裸 LF 开始下一缩进行）从第 1 列重新开始，滚动重绘后画面错位。
 
 **备份与迁移到云有了一条完整通道**（提交 80e7764720、0695cbbbab 起 20 余笔）。桌面端 Settings 新增 Backup & Transfer 区：对当前档案执行 `hermes backup` 并保存归档；"Transfer to Hermes Cloud" 走 Nous 登录、选团队与云 agent、确认替换面板，然后备份、8 MiB 分块读取、multipart 上传、轮询云端的恢复。接收侧是 `hermes import <zip> --keep-host`：替换一个云 agent、保留宿主自备的设置——auth.json 目的端保留自己的 Nous Portal 登录（归档里的 Nous token 永不写到磁盘）、config.yaml 的宿主配置键（模型、提供方、fallback、dashboard、cron 等）保留目的端值、`.env` 的 NOUS_/HERMES_/TOOL_GATEWAY_/API_SERVER_KEY 行原位保留、skills/ 与 memories/ 完全按归档替换；
 
@@ -824,7 +832,7 @@ sequenceDiagram
 
 **on_session_open：插件看见会话打开的那一刻**（提交 e412d4c6a4 起的一组）。插件此前没有办法在会话打开时行动：`on_session_start` 要等第一个 agent 回合、重新打开的会话永远不触发——记忆提供方没法预载上下文，状态展示方没法把会话标成打开（#89385）。新钩子在网关的规范权威上触发：客户端连接附加到一个它尚未附加的本地会话时（`gateway/session_open.py:88` 的 `invoke_hook`，session.create 的开放最终也走到这里），参数带 `session_id`、`platform`（cli/tui/desktop/acp 这类）与 `reason`（create 或 resume）。克制的细节都在：同一个打开只触发一次——客户端已持有的附件快照轮询与重连的事件重放什么都不发，没有进程级全局去重集；
 
-钩子在属主 profile 的运行时作用域下跑，多路复用网关只派发给那个 profile 的插件管理器（`gateway/session_authority.py:1285` 附近的执行戳注释）；经 `hermes_cli/plugins.py:1052` 的 `hook_unused_nowait` 判定，没有订阅方就不起线程；经典 CLI 进程里不跑插件代码（PLG-7 纪律）。交付的时序有讲究：打开回执从不等钩子，会话下一个被认领的回合等它——插件在模型之前看到打开（`gateway/session_controls.py:701-702` 的 `open_local` 调用点）。随后五 处把这个约定各自立稳（提交 180581e015、ce8359ef2a、32e147dcb1、d9028f3088、e0722ac821）：钩子在 attach 之前排队、跳过重连；
+钩子在属主 profile 的运行时作用域下跑，多路复用网关只派发给那个 profile 的插件管理器（`gateway/session_authority.py:1285` 附近的执行戳注释）；经 `hermes_cli/plugins.py:1052` 的 `hook_unused_nowait` 判定，没有订阅方就不起线程；经典 CLI 进程里不跑插件代码（PLG-7 纪律）。交付的时序有讲究：打开回执从不等钩子，会话下一个被认领的回合等它——插件在模型之前看到打开（`gateway/session_controls.py:701-702` 的 `open_local` 调用点）。随后五处把这个约定各自立稳（提交 180581e015、ce8359ef2a、32e147dcb1、d9028f3088、e0722ac821）：钩子在 attach 之前排队、跳过重连；
 
 回合对钩子的等待有界、失败不留 stuck executing 戳；超时在循环外读；挂起的交付不扣住后来的打开、没订阅方不起线程；已完成的交付不被下一个扣住。
 
@@ -846,7 +854,7 @@ sequenceDiagram
 
 空闲任务的契约是自限时长、小批检查点、可安全重复。
 
-**技能安装的并发随后理顺**（提交 315719e163、e116f9a408、556914dd3e）。1 秒的安装锁等待让同档案的并发安装直接失败（档案创建一次 spawn 每个技能一个安装），现在整队最多等 10 分钟，锁的等待与文档改为描述整个排队；hub 扫描端点此前拿着进程级 `_SKILLS_PROFILE_LOCK` 跨网络抓取，改为只用档案级范围；失败与中断的 quarantine 写清理自己的 mkdtemp 暂存目录，不再留一棵读作"待审"的半截树。gemini-live-bridge 插件随后改名 livetalk，版本固定在 v2.0.0（提交 4436eb78c9）。
+**技能安装的并发随后理顺**（提交 315719e163、e116f9a408、556914dd3e）。1 秒的安装锁等待让同档案的并发安装直接失败（档案创建一次 spawn 每个技能一个安装），现在整队最多等 10 分钟，锁的等待与文档改为描述整个排队；hub 扫描端点此前拿着进程级 `_SKILLS_PROFILE_LOCK` 跨网络抓取，改为只用档案级范围；失败与中断的 quarantine 写清理自己的 mkdtemp 暂存目录，不再留一棵读作"待审"的半截树。gemini-live-bridge 插件随后改名 livetalk，版本固定在 v2.0.0（提交 4436eb78c9）。插件 API 又铺了三块（2026-11-25）。插件可以读取会话是怎么创建的、有哪些被委托的子会话与分叉（提交 f261cd2d41，`hermes_cli/plugin_session.py:33` 新增的读取面）——分离分叉的来源按分叉身份报告（提交 6601d75683），运行与清理共享同一份分离分叉身份（提交 2506f5b0a4）。网关的沉默判定函数发布给平台插件（提交 c8bb9645e6）：`gateway.response_filters` 的三个函数进插件 API 白名单——整条回复是不是沉默标记、剥掉收尾的沉默标记、无人等待的运行（cron、webhook）更宽的沉默判定；文档写明这些是文本检查，tool 与 oneshot 是启动标签（提交 2161193c21）。插件还能知道网关会话正等在哪个提示词上（提交 06296e269e，`gateway/session_prompt_hooks.py` 新增的会话提示钩子）：待决提示表的拷贝是惰性快照（提交 2578b5c955），owner 作用域内的提示参数脱敏（提交 bbdcb79f7e）。`store.lineage` 的读取只返回自己的 ID、离链回退写进指南（提交 1dd65c2587、92f61fa16d、bbdc728912 的文档）。共享指标（shared-metrics，安装快照的每日统计）补了三笔：快照数出群聊（提交 29cfe1d201）、写明安装由谁托管（提交 5bfa6f442c）、房间存储读不了时保留每日快照（提交 00522b8a96）。
 
 ## 设计原则
 
@@ -934,3 +942,4 @@ sequenceDiagram
 - 2026-11-22 基于 commit 7345f81a3b 补充：后端迁移引擎、网关状态上报、工具结果预览头尾三段、记忆 provider 钩子的独立宿主、Nous 视觉能力查询三处、Telegram 常量读取、profile 删除墓碑八处、离线 AppImage 沙箱检查放行内核默认创建的 down…等（273 条提交）。
 - 2026-11-23 基于 commit 0f602c5f6f 补充：看板卡片模型预检十八处、静默标记规范化、缓存路由学习表的目录价格、profile 克隆登录来源、macOS 公证凭据预检六处、桌面端群聊记录统一投影、工作目录恢复不再 strip 尾部空格（392 条提交）。
 - 2026-11-24 基于 commit b98c388a88 补充：迁移可接管服务之外的网关、凭据只走请求头、文件夹、客户端身份、commit 构建声明标签流阈值二十五处、会话列表发现屏障按刷新请求、桌面 GPU 渲染的 SSH 判定限定在 Linux（145 条提交）。
+- 2026-11-25 基于 commit 51596aba34 补充：Solstice 推理搬进无状态 Interactions API（按模型思考档位）、doctor 的 PATH 检查按 shell 词法重写约 25 笔、.env 整行改写十笔、cron.plugin_api 调度口、插件读会话来源与沉默判定与提示钩子、stable/canary 发布渠道边界、标题生成失败告警（419 条提交，插件目录数据条目按既有口径不计入）。

@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `c7d0d38027`（2026-11-24） |
+| 笔记基准 | commit `c73a4d4c4d`（2026-11-25） |
 
 OpenCode 是一个开源的 AI 编码 agent（agent 指能自己连续做事的 AI 助手：读代码、改文件、跑命令、反复检查，而不是一问一答）。它用 TypeScript 写成，跑在 Bun（一个比 Node.js 更快的 JavaScript 运行环境）上，代码在一个 monorepo（单仓库多包，一个仓库里管着 35 个相对独立的小包）里，仓库处于 2.1 系列。你可以把它理解成 Cursor、Claude Code 的同类，但有两点不同：第一，它不绑定任何模型厂商，OpenAI、Anthropic、DeepSeek、本地模型都能接；第二，整个项目 MIT 协议开源，核心逻辑全部可读。
 
-这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `c7d0d38027`（2026-11-24）。
+这份笔记按问题组织，不按 OpenCode 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。项目演进过程放在文末修订记录里。2026 年 10 月，开发已久的 v2 分支整体合入 dev 主干（约 1.9 万条提交、近 8000 个文件），仓库进入 2.0 系列，下文提到文件路径时以 v2 合流后的现状为准。笔记起于 dev 分支 commit `17b7678`（2026-09-21），跟进到 commit `c73a4d4c4d`（2026-11-25）。
 
 ## 它要解决什么问题
 
@@ -183,7 +183,7 @@ flowchart TD
 
 声明的另一头是后台任务：后台 shell、subagent、图片生成这类活儿同样要跨进程接续。它们的恢复标记原先记在通用的 KV（key-value，键值对）表里，现在搬进专用的 `job` 表（迁移 `20261030054400_job`，提交 664c8f0990），重启后的接续读取也走这张表。这张表如今对外可见了：一个实验性的 job 列表端点从表里列出每个后台任务的状态、起止时间与恢复方式（recovery 字段描述重启后怎么接续，shell 类任务带着自己的会话 ID），外部客户端由此能看见"有哪些跨进程任务仍在运行"（`packages/core/src/job/list.ts`、`packages/server/src/handlers/job.ts`，提交 bde737f4d5，PR 60698）。同一主题上还有一处恢复成本的优化：重启后要判定"哪些工具调用还没等到结果"，此前把整条会话转写载进内存再找；现在改为直接查库，只取可能挂着流式或运行中工具调用的未完成助手消息——按 `time.completed` 为空筛选、从最近一次压缩点起读（`packages/core/src/session/history.ts:342-368`，提交 5c4983d5e2，PR 61421）。
 
-**一步可能有多次物理尝试；指令是值增量。** 每一步（Step，一次"模型与工具的往返"）大多数时候就是一次对模型的物理请求，但通用重试、继续状态被拒、不完整的流续传、溢出触发的压缩，都可以在不重新准入输入的情况下再试一次；工具调用在副作用开始前先持久化，工具调用 ID 只在一步内唯一，所以持久事件还要带上它所属的助手消息 ID。指令（发给模型的那些"提示词素材"：内置说明、发现的技能指引、引用、MCP 指引）按内容寻址存储——正文以哈希为键只存一份，事件里只发"哪些键变了"的增量；每次模型请求前并发读一遍所有指令源、原子提交一个增量；压缩结束开启新的指令世代（epoch，一个版本区间，跨压缩推进），分叉的会话拿父会话最新值当基线。规格专门强调"没有指令注册表"：指令不是一份固定名单，而是值加增量的流。增量里甚至容得下纯重排（提交 3960ebb5b9）：同一组指令源、内容都没变、只有顺序变了时，渲染器可以不产出新文本（`packages/core/src/instructions/index.ts:110-113`），提交事件照发、只是增量不带正文（`session/instruction-state.ts:44-60`），界面不必插一条系统消息——修复之前，纯重排会让整个回合以缺陷失败。
+**一步可能有多次物理尝试；指令是值增量。** 每一步（Step，一次"模型与工具的往返"）大多数时候就是一次对模型的物理请求，但通用重试、继续状态被拒、不完整的流续传、溢出触发的压缩，都可以在不重新准入输入的情况下再试一次；工具调用在副作用开始前先持久化，工具调用 ID 只在一步内唯一，所以持久事件还要带上它所属的助手消息 ID。指令（发给模型的那些"提示词素材"：内置说明、发现的技能指引、引用、MCP 指引）按内容寻址存储——正文以哈希为键只存一份，事件里只发"哪些键变了"的增量；每次模型请求前并发读一遍所有指令源、原子提交一个增量；压缩结束开启新的指令世代（epoch，一个版本区间，跨压缩推进），分叉的会话拿父会话最新值当基线。规格专门强调"没有指令注册表"：指令不是一份固定名单，而是值加增量的流。增量里甚至容得下纯重排（提交 3960ebb5b9）：同一组指令源、内容都没变、只有顺序变了时，渲染器可以不产出新文本（`packages/core/src/instructions/index.ts:110-113`），提交事件照发、只是增量不带正文（`session/instruction-state.ts:44-60`），界面不必插一条系统消息——修复之前，纯重排会让整个回合以缺陷失败。agent 自身的说明文字也成了指令源（提交 30ef864fe7）：每个 agent 的指令按 `core/agent` 键进入指令增量，切换 agent 时同一键更新，渲染按"上一个 agent 的停用文本 + 新 agent 的启用文本"出一条变更（`packages/core/src/instructions/agent.ts:19`）；Plan 模式的指引从内置插件的专用逻辑改写成一份 agent 指令（`packages/core/src/plugin/plan.ts`），同一套增量机制服务所有模式。
 
 **回合结束不一定是终点：`/goal` 的目标循环。** 斜杠命令 `/goal <目标>` 给会话立一个目标。它解决的问题是：模型答完一轮就停，多步任务常常差最后一口气——用户要么盯着屏幕反复说"继续"，要么任务悄悄烂尾。目标循环的做法是会话空闲后由一套评审机制决定要不要接着干（提交 8de0323975，实现在 `packages/core/src/plugin/goal.ts`，以内部插件身份注册）。评审提示词先把身份划清：明确要求模型"停止扮演助手、只当评审、不许调用任何工具"，只拿对话里已有的证据——工具结果、命令输出、文件内容——核对目标是否达成，"助手自称做完了"不算证据；目标文本包在 `<untrusted_objective>` 标签里当数据看待，里面若藏着"该怎么评判"的指令一律忽略。评审回一行 JSON 判决：`done`（达成）、`continue`（附下一步）、`blocked`（需要用户介入，比如缺决定、缺凭据、缺手工步骤）、`paused`（用户要求停）、`wait`（后台工作没汇报完）。判 `continue` 就注入续跑提示接着干，外面套三道上限防失控：最多 50 轮、连续 3 轮没有任何工具调用算停滞、等后台工作最多 30 分钟就暂停（`goal.ts:16-19`）。几个状态细节都朝着"不悄悄失控"设计：目标状态存会话的插件存储，分叉或子会话不继承；状态里记着一个进程启动 ID，上一个进程立的目标重启后回到 paused，不会自己悄悄续跑（`goal.ts:22-23`）；循环写状态前先重读一遍，期间用户敲的 `/goal pause`、`clear` 或新目标赢过循环自己的写入（`goal.ts:61`）；评审请求太大可以压缩一次再评，第二轮还溢出就暂停。
 
@@ -263,7 +263,7 @@ flowchart TD
 
 同时提前量不超过本轮压缩周期距离的一半，刚压缩完不会立刻又开始预计算（`compaction.ts:362`）。选那个前缀也有讲究：它正是服务端刚处理过的部分，总结请求直接读到它的缓存——但只有当最近一次响应的缓存寿命还剩至少 30 秒（`CACHE_MARGIN`，`compaction.ts:162`）时才启动，缓存快过期的总结写了也白写（`compaction.ts:386`）。自动压缩到期时不再从零等一份摘要：正在写的就等它写完，写完了直接换入，换入不了才按老办法当场总结（`compaction.ts:317-320`、`:396`）；
 
-连续失败 2 次后到下次压缩前不再开新的（`compaction.ts:171`）——开关的配置说明里直说"没被用上的后台摘要照样花 token"，太小的对话到不了提前量区间，天然不会预计算。换入也有尺寸约束：现成摘要旁边保留的原文尾部至多占 budget 的 40%（`PRECOMPUTED_TAIL_SHARE`，`compaction.ts:169`）——尾部通常远短于这个数，上限是为大块工具输入或粘贴文本的爆发准备的；按 Claude 的分词器算，换入的上下文也压在 budget 的三分之二左右，下一轮压缩仍有空间，更长的尾部干脆从头总结。配套一 处在摘要请求自己的转录组装上（提交 ac68d6a929）：放不下一整份转录时，从最旧的轮次开始逐级缩短——先砍工具输出，整轮省略是最后手段；
+连续失败 2 次后到下次压缩前不再开新的（`compaction.ts:171`）——开关的配置说明里直说"没被用上的后台摘要照样花 token"，太小的对话到不了提前量区间，天然不会预计算。换入也有尺寸约束：现成摘要旁边保留的原文尾部至多占 budget 的 40%（`PRECOMPUTED_TAIL_SHARE`，`compaction.ts:169`）——尾部通常远短于这个数，上限是为大块工具输入或粘贴文本的爆发准备的；按 Claude 的分词器算，换入的上下文也压在 budget 的三分之二左右，下一轮压缩仍有空间，更长的尾部干脆从头总结。配套一处在摘要请求自己的转录组装上（提交 ac68d6a929）：放不下一整份转录时，从最旧的轮次开始逐级缩短——先砍工具输出，整轮省略是最后手段；
 
 最新的轮次只缩短、绝不省略，摘要最需要的正是最新内容（`compaction.ts:691-699`）。转正的同时有两条简化：换入判定不再核对生成摘要时用的模型与指令——摘要就是一份纯文本，哪个模型都能接手（只有切到服务商原生压缩的会话才走原生），判定只剩"会话开头没变"与保留尾部的尺寸两条（`compaction.ts:404-420`）；窗口未知的模型（天花板无限，此前直接不预计算）也参与预计算——总量进入提前量区间就启动，而回合总会结束，下一个提示把现成摘要换入，不等一份从零写的（`compaction.ts:353-357`）。界面上两者分工也定了：自动压缩在时间线上是一条安静的分隔线，手动压缩才流式显示摘要正在写。预计算和换入的完整过程：
 
@@ -297,7 +297,7 @@ flowchart TD
 
 **home 目录多了一个记忆工作区**（提交 16bbbe635c、55c6827566）。数据目录下按项目分开，home 目录里建 `memory/`、`docs/`、`scripts/` 三个文件夹，作为 `LocalSource` 注入上下文并附使用说明；开启 `project_overlay` 时，模型写的技能落在 overlay 的 `skills/` 目录。每次闲置卸载前最多每日一次，把过去一天该目录下的会话摘要（单条 4,000 字符、总数 20 万字符上限）作为维护提示词排入一个维护会话。边界定得很保守：首次运行只记录时间起点、不做维护，维护会话创建后立即归档，没有新对话时只推进时间戳、不创建会话。代价是维护提示词要花一次模型调用，摘要在长度上限处被截断、早期细节可能丢失。
 
-工具清单这一轮五 处。`opencode.session.interrupt` 工具可以中断其他会话（提交 b575c1f30f）：递归执行"先取消任务、再中断会话、再取消一次"，遍历子会话；拒绝中断调用者自身及其祖先，避免把当前调用一起停掉（`packages/core/src/tool/plugin/session-interrupt.ts`）。shell 工具描述带上实际使用的 shell 名，shell 选择变化时经总线事件触发工具重载，取代原来挂在会话上的三个钩子（提交 825986a31a）。两个媒体工具改名为 `generate_image` 与 `generate_video`，权限规则归一化与旧配置迁移把旧名映射到新名（提交 7b70422787，`packages/core/src/v1/config/migrate.ts` 的 `renamedTool`）。视频生成默认开启（提交 04a10583c8）：`video_generate` 开关与接口层的拒绝一并删掉，改由"存在视频模型 + 配置没关 + 权限规则"决定是否注册（`packages/core/src/tool/plugin/video-generate.ts:272` 附近）。
+工具清单这一轮五处。`opencode.session.interrupt` 工具可以中断其他会话（提交 b575c1f30f）：递归执行"先取消任务、再中断会话、再取消一次"，遍历子会话；拒绝中断调用者自身及其祖先，避免把当前调用一起停掉（`packages/core/src/tool/plugin/session-interrupt.ts`）。shell 工具描述带上实际使用的 shell 名，shell 选择变化时经总线事件触发工具重载，取代原来挂在会话上的三个钩子（提交 825986a31a）。两个媒体工具改名为 `generate_image` 与 `generate_video`，权限规则归一化与旧配置迁移把旧名映射到新名（提交 7b70422787，`packages/core/src/v1/config/migrate.ts` 的 `renamedTool`）。视频生成默认开启（提交 04a10583c8）：`video_generate` 开关与接口层的拒绝一并删掉，改由"存在视频模型 + 配置没关 + 权限规则"决定是否注册（`packages/core/src/tool/plugin/video-generate.ts:272` 附近）。
 
 ## 工具系统
 
@@ -305,7 +305,7 @@ flowchart TD
 
 工具参数还可以不走 JSON：恰好只有一个必填字符串参数的工具可以设 `freeform`，模型把这个参数直接写成原始文本——不受约束的 `text`，或者匹配一个 `regex` / `lark` 文法的文本（`packages/ai/README.md:105-125`，提交 45713a326c）。为什么要多这条路？工具参数默认是 JSON，模型写 JSON 时转义、引号、换行都容易出错，写一段原始代码或命令反而更自然。OpenAI 的 Responses 与 Chat Completions 及复用它们的提供方把它作为 custom tool 发送，其他协议照发普通 JSON 工具；没有任何检查或回退——模型不接受 custom tool 就收到提供方的错误，所以只对确认支持的模型设置。
 
-调用、工具输入事件、结果与历史始终用对象形式（README 的例子是 `{ code }`），过去的调用按当前请求里的声明方式重放，同一份历史有没有 `freeform` 都能用。这条能力随后也铺给了 Code Mode 里声明的工具（提交 53f2d631df）：模型支持 freeform 时，单个字符串参数的工具在 Code Mode 的工具清单里自动按 freeform 声明（`packages/codemode/src/codemode/tool-schema.ts`），模型写脚本调用这类工具时直接给文本、不必包一层 JSON。
+调用、工具输入事件、结果与历史始终用对象形式（README 的例子是 `{ code }`），过去的调用按当前请求里的声明方式重放，同一份历史有没有 `freeform` 都能用。这条能力随后也铺给了 Code Mode 里声明的工具（提交 53f2d631df）：模型支持 freeform 时，单个字符串参数的工具在 Code Mode 的工具清单里自动按 freeform 声明（`packages/codemode/src/codemode/tool-schema.ts`），模型写脚本调用这类工具时直接给文本、不必包一层 JSON。格式的决定权随后收进 AI 包（提交 553c14178e）：发不发 freeform、按哪种线格式发，由模型能力在 AI 包内统一判定，各协议实现不再各自猜测。freeform 的首行语法也放宽了（提交 e33e872628，`packages/ai/src/protocols/openai-freeform.ts`）：模型在首行之外还能给同一工具的其他参数，参数顺序不限——工具可以同时收一段自由文本和一个结构化字段。
 
 **工具清单可以在会话中途变化**（提交 49b94635ff）。此前一次请求的顶层 `tools` 就是这一步可用的全部工具，中途增删要等下一次请求整体重发。现在 `packages/ai/src/tool-updates.ts` 把工具声明变成消息流里的一份有序清单：一条系统角色的消息可以携带 `Message.tools({ add, remove })` 标记，按消息顺序生效——先删后加，同名工具原位替换（`tool-updates.ts` 的 `foldTools`）。协议按能力选两副面孔：模型的 `tools.updates` 能力与协议编码都覆盖某个变更时，标记留在消息原位发送，顶层声明和它背后的提示词缓存不动；覆盖不了时，全部标记折叠进顶层声明一次发清，代价是缓存作废重来（`tool-updates.ts:1-3` 的注释）。
 
@@ -313,7 +313,7 @@ flowchart TD
 
 Code Mode 让模型写一段 JavaScript，在一段受控的运行时里连续调用工具，省得每个动作都单独请求一轮模型。跑这段代码用的不是宿主的 JavaScript 引擎直接执行，而是 `packages/codemode` 自带的一套受控运行时：程序先编译成自有字节码、由自研虚拟机执行——支持哪些语法和内置对象列在 `interpreter-support.md` 里，不在清单上的就是不支持。为什么放着现成的引擎不用、要自己造一套？因为模型写的代码要受控：不能让它访问任意网络、任意文件，工具调用要逐个过权限。宿主引擎给不了这种细粒度的控制点，自研运行时才有。这话有个现成的例子：解释器里的 `fetch` 也要过权限——按 webfetch 工具的同一套规则检查 URL（`packages/core/src/codemode/fetch.ts:31`，注释写明"在 webfetch 被拒的 URL 在这里同样被拒"），被拒时把用户附的那句反馈原样作为错误信息带给程序；读本地文件的 `file:` 地址则直接报错（提交 bdca40ac0e）。
 
-两条修正把这道检查做实了：权限规则对**请求的 URL 原样**匹配——只剥掉永不发送的 fragment，其余按输入原样比对，无效 URL 直接报错而不是往下走（`packages/core/src/tool/plugin/webfetch.ts:144-146`、`packages/core/src/codemode/fetch.ts:19-21`；提交 805a4b8200 先做过一版归一化匹配，e803323c13 把它改回原样比对——用户按浏览器地址写的规则照原样对得上）；重定向改为 fetch 自己跟随，每一跳的新 URL 都对照 webfetch 同一套 deny 规则、带 redirectedFrom 记录来路（`fetch.ts:47-53`，提交 b5b9bddb54，PR 60502）——此前重定向由底层 HTTP 实现跟随，中间跳过的 URL 没过任何权限。
+两条修正把这道检查做实了：权限规则对**请求的 URL 原样**匹配——只剥掉永不发送的 fragment，其余按输入原样比对，无效 URL 直接报错而不是往下走（`packages/core/src/tool/plugin/webfetch.ts:144-146`、`packages/core/src/codemode/fetch.ts:19-21`；提交 805a4b8200 先做过一版归一化匹配，e803323c13 把它改回原样比对——用户按浏览器地址写的规则照原样对得上）；重定向改为 fetch 自己跟随，每一跳的新 URL 都对照 webfetch 同一套 deny 规则、带 redirectedFrom 记录来路（`fetch.ts:47-53`，提交 b5b9bddb54，PR 60502）——此前重定向由底层 HTTP 实现跟随，中间跳过的 URL 没过任何权限。这一层随后又接了两件事：`opencode://` 地址的 fetch 按调用 opencode API 命令做权限检查（提交 70ba59b511，`packages/core/src/codemode/fetch.ts`）——从脚本里读自家 API 与跑 `opencode api` 命令同一套规则；请求体接受 `Bun.file()` 的文件句柄（提交 a5232b2057，`fetch.ts:33` 的错误提示列出合法类型），发大文件不再整体读进内存。
 
 解释器还学会了**按 Node 模块名导入宿主全局**（提交 adcfc83d19，PR 61151）：`import fs from "node:fs"`、`require("crypto")`、`await import("fs")` 都解析到宿主经扩展提供的全局，`node:` 前缀剥掉后与裸名等价，`fs/promises`、`url`、`util`、`buffer` 是别名，映射到提供它们的全局（`modules.ts:8-15`）；没有包，其他名字一律抛错。import 在程序运行前加载，默认导入绑定模块本身（Node 呈现 CommonJS 的方式）；全局若是函数对象（比如 `fs`），从它可达的每个函数都是一个入口，调用触发 extension 钩子时以路径为名（`fs.readFile`、`fs.promises.readFile`）。
 
@@ -390,7 +390,11 @@ opencode 没有单独的 agent team 抽象：并行工作就是多个后台子�
 
 `read` 工具能解析 `skill://` 路径读附带文件，读之前过两道权限：先按技能 ID 过 `skill` 权限，再按规范化后的 URI 过 `read` 权限——尾斜杠先归一（`packages/core/src/tool/plugin/read.ts:63`、`:71`、`:252-256`），`skill://id/file/` 绕不过写给 `skill://id/file` 的规则。桌面应用的文件面板把 `skill://` 当虚拟路径识别，旧的 `/builtin/` 前缀仍兼容。这条路直接服务于"插件系统"一节里 Console 工作区下发的技能：云上下来的技能就是以这种形式生效的。
 
-shell 工具的结构化结果也说清了"为什么没有退出码"（提交 dcb24c74dc）：被信号终止、或因超时转入后台的命令没有退出码，结果里直接写明原因，而不是留一个让人猜的空字段。read 工具在超大文件上定位时改了读取节奏（提交 4332e24fad）：按偏移跳读时块大小逐次放大，找远端行不再从固定小块一路扫过去。工具结果里的字段顺序也理了一遍（提交 5756d59a68）：小字段排在大的输出之前，`exitCode` 这类结论字段不必等整段输出读完才出现——模型与流式解析都先拿到关键判据。环境相关的能力查询与事实读取也各收了一个入口（提交 d03cb4a024、cf2d028d82）：文件访问、shell 与搜索统一问环境"你能做什么"，不再各自假设本地文件系统的行为。
+技能的正文与附带文件随后改成"列清单不载内容"（提交 244491841d）：技能条目可以只带名字与描述，`content` 字段在加载前是空串（`packages/core/src/skill.ts:124` 的编辑器注释），第一次被用到时才经 `Skill.content()` 读入正文（`:132`），附带文件同样按需读取——一串长技能列表不再把全部 SKILL.md 拖进上下文。
+
+技能又多了一个来源：连接的 MCP 服务器（提交 df79010bc6）。服务器声明的技能按 `<服务器>:<名字>` 注册（`packages/core/src/plugin/mcp-skill.ts:9` 的模块注释），`Mcp.SkillsChanged` 事件到达就触发技能目录重载；正文与附带文件按需经 MCP 读取，每个文件对照服务器声明的尺寸与摘要校验，校验过的文件按摘要驻留内存。`resources` 声明为 dynamic 的技能不进目录——动态清单列不出文件，没有文件清单就无从校验。
+
+shell 工具的结构化结果也说清了"为什么没有退出码"（提交 dcb24c74dc）：被信号终止、或因超时转入后台的命令没有退出码，结果里直接写明原因，而不是留一个让人猜的空字段。read 工具在超大文件上定位时改了读取节奏（提交 4332e24fad）：按偏移跳读时块大小逐次放大，找远端行不再从固定小块一路扫过去。工具结果里的字段顺序也理了一遍（提交 5756d59a68）：小字段排在大的输出之前，`exitCode` 这类结论字段不必等整段输出读完才出现——模型与流式解析都先拿到关键判据。环境相关的能力查询与事实读取也各收了一个入口（提交 d03cb4a024、cf2d028d82）：文件访问、shell 与搜索统一问环境"你能做什么"，不再各自假设本地文件系统的行为。read 工具随后补了三处。部分读取的结果显式化（提交 d65b5d24c7）：读取被截断或只取了一段时，结果明确标注"这是部分结果"，Code Mode 里的脚本不再把半份内容当全文用。文件类型识别对头部被挪过的 PDF 也生效（提交 ee3326b5d1）：`%PDF-` 标记不在字节 0 时，在前 1024 字节内搜索（`packages/core/src/mime.ts:42`，要求标记前是文本、标记后带二进制注释段），一些工具写出的"文本前缀 + PDF"文件不再被误判。实验性的 `cd` 工具进来了（提交 6d04312b71，`packages/core/src/tool/plugin/cd.ts`，machines 旗标后）：切换会话工作目录走工具而不是只有配置，切换本身过权限。
 
 ### 执行的统一封装与自定义工具
 
@@ -427,15 +431,17 @@ shell 工具的结构化结果也说清了"为什么没有退出码"（提交 dc
 
 **"工具是否整体禁用"的判定改成顺序折叠。** `Permission.isActionDenied`（`packages/core/src/permission.ts:118`）从空值开始：遇到资源为 `*` 的规则就用它的结果重置结论，遇到窄规则只在 deny 时保持、遇到 allow 或 ask 立即判否。此前用"取最后一条匹配规则"，`deny *` 后面跟一串窄 deny 会算成未禁用、后面有窄 allow 又会被判为禁用；折叠之后，`deny *` 加窄 deny 仍是整体禁用，`deny *` 加窄 allow 则照常暴露工具（提交 c7d0d38027，调用点在 `packages/core/src/tool.ts:326`、`:425`、`:435`、`:500`）。"是否在本机执行"也从工作区标识的推断改成读执行环境的事实（提交 7d2acece1d）：启动器是不可用实现时不再设置"能服务宿主"与"可搜索"，`packages/core/src/filesystem.ts` 的启动路径解析、插件宿主的 worktree 策略、Claude Agent 与本地提供方的远端判断统一改用这份事实（`packages/core/src/environment/environment.ts:60` 附近）——代价是任何自定义构造的执行环境必须自己声明这些事实。分支列表也改用符号引用标记区分，不再按 `/HEAD` 后缀丢弃，`topic/HEAD` 这类真实分支能列出（`packages/core/src/plugin/vcs/git.ts:261` 附近，提交 6230d3bc35）。
 
+**环境的构造与接入面收拢了。** 环境的声明项收敛（提交 2255b89322）：`Environment.Facts` 与 `MachinePath` 移除，环境改用显式的 Options 加 home 与 rg 两项声明——自定义环境要交代的内容更短、也更明确。一个统一入口随之出现（提交 01daacc688）：`Environments`（`packages/core/src/environment/environments.ts`）按名字解析环境，本机、远端机器与会话工作目录走同一扇门。驱动层补了懒连接与拉模式（提交 63f2ac5309）：`Driver.lazy` 组合子（`packages/core/src/environment/driver.ts:35`）把"什么时候真正建立连接"交给环境自己决定；worker 客户端支持拉模式（`packages/core/src/machine/worker-client.ts:98`）——对接一个在监听的 `opencode-worker serve`，调用方需要结果时才取数据，不再常驻一条推连接。Cloudflare 部署（workerd 运行时）一侧补上了工作区生命周期（提交 fb56d1cd91）：空闲超过阈值的 workspace 挂起、保活名单内的连接保留（`packages/core/src/workspace.ts:89` 的 `keepWarm`），周期轮询或 Durable Object 的闹钟（alarm）驱动每一次挂起检查（`:105`）——托管环境里闲置的项目位置不再占着 warm 连接与内存。
+
 ## 权限与策略
 
-"这件事 AI 能不能做"由一张规则表决定，核心是 `permission/index.ts` 里的 `evaluate` 函数：
+"这件事 AI 能不能做"由一张规则表决定。规则本身形如"什么权限 + 什么模式 → 怎么处理"——**permission** 是想干什么（如 `edit`、`bash`、`read`），**pattern** 是在哪个范围上干（如文件路径、命令前缀）；把若干条规则组装成一个可求值的整体，靠的是一套策略代数（`packages/core/src/permission/policy.ts:27` 的 `Policy` 类型），三种组合子各管一种叠加语义：
 
-```
-evaluate(permission, pattern, ...rulesets) → { action: "allow" | "deny" | "ask" }
-```
+- **override（覆盖层）**：有序的"后写者胜"层。求值时从最后一层往前找，**最后一条匹配的规则生效**（`matchLast` 用 `findLast` 实现，`policy.ts:86`）。为什么按书写顺序定优先级？因为例外条款总是后补的：先有默认允许，后来发现某类文件危险，补一条例外——例外自然压过默认。内置默认、agent 自带规则、用户配置三层就这样叠起来。
+- **restrict（限制层）**：单调的"命中即拒绝"。它浮在覆盖层之上，覆盖层的规则与兜底层都翻不了它给出的拒绝——配了 restrict 里的 deny，任何后写的规则都撤销不了。
+- **fallback（兜底层）**：只裁决 `ask`。基础策略给出 allow 或 deny 时原样保留；只有结果是要询问人时，才让兜底层（典型是"已保存的批准"）接手回答。
 
-三个输入：**permission** 是想干什么（如 `edit`、`bash`、`read`）；**pattern** 是在哪个范围上干（如文件路径、命令前缀）；**rulesets** 是若干条规则，每条形如"什么权限 + 什么模式 → 怎么处理"。函数在所有规则里找匹配的，关键实现是 `findLast`：**从后往前找，最后一条匹配的规则生效**。这相当于给规则定了优先级，写在后面的覆盖写在前面的。为什么这样定？因为例外条款总是后补的：先有默认允许，后来发现某类文件危险，补一条例外——按书写顺序定优先级，例外自然压过默认。于是可以这么用：先写一条宽松的（"读任何文件都允许"），后面跟一条例外（"读 `*.env` 要询问"），例外自然压过默认。
+求值入口 `evaluate(policy, action, resource)`（`policy.ts:103`）对组合出的树递归求值，没有规则命中时默认 `ask`；`evaluateAll`（`:108`）把多个资源的结果按"deny > ask > allow"的格合并——任何一个资源被拒就整体被拒。`Permission.evaluate`（`packages/core/src/permission.ts:110`）是对它的薄包装：把几条规则表用 `fromRules` 合成一棵最小策略树再求值，旧调用方的签名不变。
 
 shell 命令的授权遇到扫描器分析不了的写法也有了明确处置（提交 291c51b704）：可移植的 shell 扫描器读不懂 `eval` 或别的动态执行时，此前的请求清单是空的——一条 deny 规则无从对子命令生效。现在分两种情况（`packages/core/src/shell/permissions.ts` 的 `UnverifiableError`）：配了 shell 的 deny 规则时直接拒绝，错误消息说明扫描器无法分析、要求改写命令去掉动态执行；没有 deny 规则时请求两条权限——目标是 `external_directory` 的 `*`（未分析的命令可能到达任何目录，只有放行所有目录的规则才能自动通过），以及 shell 动作本身、资源就是整条命令，两条都明确不保存为模式。授权不再是"分析不了就默认放行"，而是"分析不了就把范围放到最大来问人"。
 
@@ -455,6 +461,10 @@ flowchart TD
     REPLY -->|"always 总是允许"| ALW["往已批准列表追加一条 allow 规则<br/>其他能被新规则放行的等待请求一起放行"]
     REPLY -->|"reject 拒绝（可附一句反馈）"| REJ["同会话其他等待请求一起取消"]
 ```
+
+"总是允许"对网址类请求存的东西也改准了（提交 c6df401531）：此前每个完整 URL 各存一条规则，批准一次并没有让"同一站点的另一个页面"免问；现在按站点保存——`Permission.site()`（`packages/core/src/permission.ts:91`）从 URL 提取源点，带路径与不带路径各存一条；带凭据或空白字符的站点（`https://opencode.ai@evil.com` 实际访问的是 evil.com）只保存它自己，含 `*` 或 `?` 的写法不提供"总是允许"。
+
+无人值守的运行也有一条明确的裁决规则（提交 84e357e025）：定时检查这类没人回答问题的场合带一份 Unattended 规则（`packages/core/src/permission.ts:64`）——请求会走到"问人"时，规则明说允许才放行、否则直接拒绝，消息写明"需要批准而现场没有人"；配置里的 deny 先于它求值，规则自己变不出一条放行。边界随后堵上一处：权限钩子把 allow 降成 ask 时，无人值守规则必须显式允许这个请求，不再继承钩子降级之前那份 allow（`permission.ts:223` 附近的注释与判定）——否则钩子先放行、无人值守规则搭了便车，等于绕过降级。
 
 ### 规则从哪来
 
@@ -528,6 +538,8 @@ Console 工作区的事件也能反过来唤醒本地会话（提交 fa928beb84 
 插件对权限的参与也很深：插件可以主动发起权限请求（assert），输入形状与会话内的权限请求一致（sessionID、agent、动作、资源、保存策略、来源等字段，见 packages/plugin/src/permission.ts 的 AssertInput；提交 6a7cedcbf1）。插件工具要碰敏感资源时，走和内置工具同一条"问用户"的通道，而不是绕开它。服务器侧的处理器不再等插件（提交 ce7b4252d8）：model、provider、generate、voice、websearch 这些处理器与目录读取，在插件还在激活时直接返回当前快照，不等待、不重试、不把慢插件变成超时或 503。图形界面的插件也可以声明自己的图标（提交 22377659a8），界面不必为每个插件各备一份。
 
 插件的自动更新范围随后从"`name@latest`"扩到"明确写了跟随目标"的写法（提交 db2d889c0e）：`@latest`、版本范围、Git 的 `semver:` 范围、远端确认为分支的 Git ref 自动更新；裸包名、其他 dist-tag、Git tag 与 commit 保持已安装版本。Git ref 是否为分支通过 pacote 的 `GitFetcher` 解析结果判断，依赖它缓存的 refs，通常不会再次访问远端（`packages/util/src/npm.ts:45`、`:81`）。检查周期从 48 小时改为 24 小时（提交 2c9060237f）。代价是 Git 分支判定需要一次远端解析，同一周期内每个目标只尝试一次、更新失败不在周期内反复重试。
+
+插件调用的中止语义也定齐了（提交 57f83d690d、883c871683、71324e2063）：走 Promise 的插件 API 调用尊重中止信号——信号触发时调用以信号携带的原因拒绝，不再无限悬挂；中止到达前已经完成并产出错误的调用，错误照常交付，不被迟到的取消吞掉。
 
 ## 标准协议：LSP、ACP 与 MCP
 
@@ -609,7 +621,7 @@ MCP 的事件推送跟随了 Events beta 的投递形态（提交 1645a8aa5a）�
 
 渠道默认值的输入端也堵上了一道暗门（提交 e42d622a75）：构建元信息（channel、version、name）此前是带默认值的服务引用，组装漏了它就静默按 release 渠道处理、所有 flag 默认全关；现在改成必需服务（`packages/core/src/app.ts:12` 的 `Service`），缺元信息直接组装失败——"悄悄回到 release 默认"从此不可能。
 
-三 处与配置读取有关的补齐。全新安装也能继承旧凭据了（提交 478de99765）：建库事务在 schema 建表后立即执行旧凭证导入迁移（`packages/core/src/database/migration.ts:39`），`auth.json` 里的 OAuth 凭据进新库；迁移本身也放宽了一步——"auth.json 不是 JSON 对象"从致命错误降为警告并跳过（`packages/core/src/database/migration/20260805200742_import_legacy_credentials.ts:52`）。旧版配置里的模型引用保留了内联写法（提交 12b6efad8b）：v1 迁移的模型选择改用统一的 Selection schema 解码（`packages/core/src/v1/config/migrate.ts:17`），`provider/model#variant` 形式不再被当非法引用丢弃，内联 variant 与显式 `variant` 字段合并时内联优先（`migrate.ts:68-76`）。
+三处与配置读取有关的补齐。全新安装也能继承旧凭据了（提交 478de99765）：建库事务在 schema 建表后立即执行旧凭证导入迁移（`packages/core/src/database/migration.ts:39`），`auth.json` 里的 OAuth 凭据进新库；迁移本身也放宽了一步——"auth.json 不是 JSON 对象"从致命错误降为警告并跳过（`packages/core/src/database/migration/20260805200742_import_legacy_credentials.ts:52`）。旧版配置里的模型引用保留了内联写法（提交 12b6efad8b）：v1 迁移的模型选择改用统一的 Selection schema 解码（`packages/core/src/v1/config/migrate.ts:17`），`provider/model#variant` 形式不再被当非法引用丢弃，内联 variant 与显式 `variant` 字段合并时内联优先（`migrate.ts:68-76`）。
 
 v1 迁移还保留了 provider 自己的 baseURL（提交 a687c047af）：旧配置的 `api` 字段（提供方类型）与 `options.baseURL` 同时存在时，已填的 `options.baseURL` 优先、为空才回退 `api` 值（`packages/core/src/v1/config/migrate.ts:128`）——自定义网关地址不再被提供方类型顶掉。agent 与 command 的 markdown 文件发现也修正了（提交 6a89e9f287、21ec64ac9f、b2b5da600e）：扫描目录跳过 node_modules 一类噪音路径（`packages/core/src/config/plugin/agent.ts:138`），frontmatter 校验失败从静默丢弃改为带文件路径与原因的警告（`agent.ts:28-29`，command 同改 `packages/core/src/config/plugin/command.ts:20`）——写错的 agent 文件为什么没生效，第一次有地方可查。
 
@@ -627,7 +639,7 @@ v1 迁移还保留了 provider 自己的 baseURL（提交 a687c047af）：旧配
 
 ChatGPT 各套餐的可用模型清单改从 models.dev 读取（提交 43b1015f57），此前这份清单写在插件里、随套餐变化要改代码。语音模型同样从目录列出（提交 387140811c），应用启动语音时用服务器列出的最新 GPT-Live 模型（提交 342839461a）。ChatGPT 的刷新令牌被拒时不再只报一句授权失败（提交 5310e42203）：插件解码 `{"error":"invalid_grant"}` 这唯一的失败形状，直接提示重新连接——刷新链已经断了，等它自己恢复没有意义。
 
-**模型的服务档位成了独立条目。** models.dev 的 `capabilities.service_tier` 被展开成独立模型，并在 `experimental.speed` 里标注基础模型、档位 id 与是否更快（提交 7edab789f7，`packages/schema/src/model.ts:113` 之后）：目录按 rank 排序，请求时按协议决定档位放在 `settings.speed`、`settings.serviceTier` 还是请求体的附加字段里（`packages/core/src/models-dev.ts:283`、`:352`）；成本支持带日期条件的倍率，目录按"推荐与档位"四种组合分别缓存；基础模型被禁用时其档位一并禁用（`packages/core/src/model.ts:236` 之后）。档位没有倍率时用该档位自己的价格表、不直接退回基础价（提交 4b0e34747b）；Rust 客户端随后补到同一形态（提交 b51482f907）。
+**模型的服务档位成了独立条目。** models.dev 的 `capabilities.service_tier` 被展开成独立模型，并在 `experimental.speed` 里标注基础模型、档位 id 与是否更快（提交 7edab789f7，`packages/schema/src/model.ts:113` 之后）：目录按 rank 排序，请求时按协议决定档位放在 `settings.speed`、`settings.serviceTier` 还是请求体的附加字段里（`packages/core/src/models-dev.ts:283`、`:352`）；成本支持带日期条件的倍率，目录按"推荐与档位"四种组合分别缓存；基础模型被禁用时其档位一并禁用（`packages/core/src/model.ts:236` 之后）。档位没有倍率时用该档位自己的价格表、不直接退回基础价（提交 4b0e34747b）；Rust 客户端随后补到同一形态（提交 b51482f907）。档位的定价与标识随后修准了五处：档位条目发出请求时带着自己要的档位 ID，模式与档位的对应不再错位（提交 e4cd9c2bc5）；档位速度按档位自己的长上下文费率计价（提交 6c7e0455ad，`packages/core/src/models-dev.ts:292` 的 `modeCost`），以前混用基础模型费率；文本价格不是按 token 计的提供方，其档位保持免费标记（提交 7dd39a70b6）；导入期价格（introductory，上架初期的临时价）跨天重算（提交 fe6a9c9013）——带日期条件的价格到了新的一天要按新条件取值；旧变体（legacy variants）按所选速度保留（提交 4bb997ea44），已选 fast 的会话不因目录刷新丢变体。
 
 工具命名空间的扁平化提前到协议构造（提交 3b38f3aadd）：协议若未声明支持命名空间，请求在交给它之前就已经扁平——工具定义、系统消息里的工具更新（命名空间重定义导致的隐式移除改写成显式 remove）、历史里的工具调用与结果名称、强制工具选择一并处理（`packages/ai/src/route/protocol.ts:91`、`packages/ai/src/protocols/shared.ts:385`）。代价是每个协议适配器不再自己拼装工具，包装请求构造的中间层必须转发这个声明。xAI 的压缩请求也先走同一步（提交 d3abc6706c），压缩请求里的历史名称与普通步骤完全一致，前缀缓存才能命中同一段。搜索提供方多了一个以 Claude Code 为后端的选项（提交 8bae58e7b9）：用 `claude` 可执行文件跑 `haiku`、最多两轮、禁用思考、只允许它的网页搜索工具，一分钟超时；结果把链接列表与 Claude 的总结合并到第一条。TUI 也把"只有配置项、没有凭据"的提供方算作已连接（提交 8f8a9ae88d）。
 
@@ -781,7 +793,7 @@ flowchart LR
 
 shell、工具与模型流的 span 也带上了会话、agent 与命令标签（提交 adb0053d09），一条 trace 里的每段 span 都能按会话或命令归组。
 
-存储与协议正确性这一轮五 处。助手消息更新避开 SQLite 的 `->` 运算符、改用 `json_extract`，兼容 macOS 12 自带的 3.37（提交 811cdb8c27，`packages/core/src/session/projector.ts:678`、`:693`），并在 `packages/core/AGENTS.md` 里记下 SQLite 版本下限。压缩保留尾部的额度改成每条消息加一再加总，允许从任意消息开始、不再强制限定到 user 消息边界（提交 ad8858de43，`packages/core/src/session/compaction.ts:1031`）。goal 提醒改插在索引 1、即压缩摘要之后，不再放在尾部——此前每一步都把它往尾部推一次，等于每一步都移动缓存断点（提交 9ae270fe29）。媒体 blob 统一保留 7 天、每小时清理一次（提交 8c0be712aa，`packages/core/src/blob-store.ts:28`、`:92`）。异步迭代器先检查取消再取队列，源已完成时取消也能生效（提交 b8cbd0e43c，`packages/client/src/shared-events.ts:136`）。
+存储与协议正确性这一轮五处。助手消息更新避开 SQLite 的 `->` 运算符、改用 `json_extract`，兼容 macOS 12 自带的 3.37（提交 811cdb8c27，`packages/core/src/session/projector.ts:678`、`:693`），并在 `packages/core/AGENTS.md` 里记下 SQLite 版本下限。压缩保留尾部的额度改成每条消息加一再加总，允许从任意消息开始、不再强制限定到 user 消息边界（提交 ad8858de43，`packages/core/src/session/compaction.ts:1031`）。goal 提醒改插在索引 1、即压缩摘要之后，不再放在尾部——此前每一步都把它往尾部推一次，等于每一步都移动缓存断点（提交 9ae270fe29）。媒体 blob 统一保留 7 天、每小时清理一次（提交 8c0be712aa，`packages/core/src/blob-store.ts:28`、`:92`）。异步迭代器先检查取消再取队列，源已完成时取消也能生效（提交 b8cbd0e43c，`packages/client/src/shared-events.ts:136`）。
 
 ### 存储：SQLite 与媒体去重
 
@@ -835,6 +847,8 @@ flowchart TD
 到点不一定要唤醒会话。重写前的 `if`/`until` 条件（shell 或 code 检查）收敛成了动作本身的一种：`code` 动作在受限的 Code Mode 运行时里跑一段 JavaScript——不调模型、没有网络，`tools.<路径>(...)` 形式的工具调用由静态扫描从语法树里提取（`packages/codemode/src/codemode/scan.ts`），上限 30 秒、20 次工具调用、32KB 输出（`packages/core/src/automation/code.ts:18-22`）。程序拿到 `input = { state, now, runs, args }`（`state` 上次运行留下的状态，初始 null；`event` 触发器另有 `input.event = { id, timestamp, data }`，data 按事件类型声明的 payloadSchema 校验），返回任意组合：`state`（下次运行的 JSON 状态）、`done: true`（停止）、至多一条 `send`（`send.prompt` 以 steer 投给会话，可带 `to` 派子会话）；省略 `send` 就是安静检查，被拒的 send 不提交 state 与 done（`packages/schema/src/automation.ts:169` 的说明）。
 
 code 动作是无人值守跑的，围栏因此格外紧，有两条值得记：一批工具在代码里直接禁止（`packages/core/src/automation/code.ts:38-51` 的 `FORBIDDEN_TOOLS`）——shell（批准它等于批准任何命令）、automation 的四个管理工具（检查不能自己再造或改动自动化）、改会话与动 worktree 的工具；建任务时逐个授权，授权不保存——"总是允许"会存成项目级放行，而无人值守的运行一次点击换不来永久通行（`packages/core/src/automation/code.ts:117` 的注释）。失败处理分层：提示词失败 5 分钟后重试；代码失败 1 分钟后重试、连续 3 次失败暂停（`packages/core/src/automation/code.ts` 的 `CODE_FAILED_RETRY` 与 `MAX_CODE_FAILURES`，`automation.ts:134-135`）；节奏底线是 `prompt` 动作最短间隔 1 分钟、`code` 动作 15 秒（`packages/core/src/automation.ts:122-123`）。
+
+插件创建自动化的通路补齐了一串边角。创建时权限配置尚未加载就拒绝（提交 af54caef70）——授权判定依赖配置，配置没就绪时创建的自动化会带着空权限跑；安装阶段反而放行（提交 01bf9f0d65），setup 流程里建的自动化合法。Effect 插件建的自动化过一遍校验（提交 6eccfc8d45，`packages/core/src/plugin/host.ts`），字段缺省的容忍也补上（提交 baa7e92876）。目标会话的插件注册表要等就绪（提交 f84258d3b6）——自动化投递的目标会话若还带着未激活的插件，触发会漏掉插件的钩子。别的项目的自动化对本项目的工具视为不存在（提交 4149d9e5ea），跨项目误操作从此报"没有这个自动化"。
 
 重复自动化可以带 `expires`（一个时刻、挂钟时间或"8 小时后"这类写法）到点自动停。管理面是五个工具——`automation_create`、`automation_list`、`automation_pause`、`automation_resume`、`automation_delete`（`packages/core/src/plugin/command/automation.txt`），取代重写前的 schedule 工具与 `/schedule` 命令；`automation_list` 显示名字、触发器、状态与下次触发时间。一个自动化从建到停的完整生命周期是：
 
@@ -961,3 +975,4 @@ Windows 上的 pipe 进程改为先以挂起状态创建、加入作业对象（
 - 2026-11-22 基于 commit 9a2f16d165 补充：配对机器免审批并移除"allow 必须写出机器名"的约束、扫描器无法分析的 shell 命令按 deny 规则拒绝或请…、shell 结构化结果说明无退出码原因、顶层 Code Mode 调用记为 execute 程序、浏览器登录复制到远端页面不阻塞界面、工作目录解析收敛成一个函数、到机器的字节转换加速、桌面端九处等（38 条提交）。
 - 2026-11-23 基于 commit 030e8d75d3 补充：Rust 原生客户端 packages/cli-rs、ChatGPT 套餐模型清单、read 工具跳读块递增、MCP Events beta 投递、Code Mode pinned 工具完整描述、数据看板周视图、收件箱侧栏列出草稿、Windows AppUserModelID 隔离等（36 条提交）。
 - 2026-11-24 基于 commit c7d0d38027 补充：会话工作目录、权限整体禁用判定改为顺序折叠、自动化四处、工具五处、Code Mode 本地 API 、模型服务档位三处、存储、多段快捷键等（75 条提交）。
+- 2026-11-25 基于 commit c73a4d4c4d 补充：权限策略代数与无人值守裁决、技能从 MCP 服务器加载与按需正文、插件自动化与中止语义、环境入口统一与 worker 拉模式与 workerd 工作区保活、Code Mode 拉取与读取五笔、agent 指令、服务档位定价五笔（71 条提交，revert 两笔不计）。

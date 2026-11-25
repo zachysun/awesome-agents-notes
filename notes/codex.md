@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | Apache-2.0 |
 | 主语言 | Rust |
-| 笔记基准 | commit `a4ee1058d9`（2026-11-24） |
+| 笔记基准 | commit `b0b0852ee`（2026-11-25） |
 
 Codex 是 OpenAI 开源的编码 agent（agent 指能自主多步行动、调用工具完成任务的 AI 程序），主体用 Rust 编写，跑在用户自己的电脑上：终端里敲 `codex` 进入交互界面，让它读代码、改文件、跑命令、运行测试。规模不小：`codex-rs/` 目录下一百多个 crate（Rust 的模块/零件单位），四千六百多个 Rust 源文件，近两百万行代码（含测试）。在同类工具（Claude Code、opencode、Gemini CLI 这类终端编码 agent）里，Codex 的位置是官方出品、生产级强度的参考实现：一套 Rust 核心同时支撑终端界面、IDE 插件、桌面应用和云上服务，安全机制和上下文管理都做得非常系统。
 
-这份笔记按问题组织，不按 Codex 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一个动作、一次恢复"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `4ca8e7aff` 前后（2026-09-21），跟进到 commit `a4ee1058d9`（2026-11-24）。
+这份笔记按问题组织，不按 Codex 的开发时间线：每个问题讲清它现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都把"一次请求、一个动作、一次恢复"从头走到尾。项目演进过程放在文末修订记录里。笔记起于 commit `4ca8e7aff` 前后（2026-09-21），跟进到 commit `b0b0852ee`（2026-11-25）。
 
 ## 它要解决什么问题
 
@@ -110,7 +110,7 @@ flowchart TD
 
 Responses WebSocket 的上传路径随后补齐了读写的仲裁规则（提交 1c297f899、9f2b87495、bb5b9c624）。空闲连接在写缓冲满时无法回应服务端 Ping：自动排队的 Pong 在套接字变为可写时重试 flush，进行中的 flush 期间限制入站轮询次数与追踪的 Pong 数量（`codex-rs/codex-api/src/endpoint/responses_websocket.rs:168-223`）。上传中途写失败时，服务端早先发出的错误会被掩盖：现在失败后立即排空可读回复（受发送截止时间与有界读额度约束），用这些回复呈现服务端错误（比如消息过大关闭），首个分片之前观察到的关闭归因于空闲连接，发送失败后弃用该套接字；新增 `WsSendOutcome::{Interrupted,NotStarted}`（`WsSendOutcome::Interrupted` 表示部分写入后失败，`NotStarted` 表示完全未开始）区分两种情形（`responses_websocket.rs:245-296`）。
 
-服务端停止读取请求导致写阻塞、同时发来 Ping 或拒绝消息时，每帧发送之前先轮询入站，写处于 pending 时也轮询；后续轮询把 Tokio 的协作调度额度优先给待完成的写，并给整个上传过程设 1 MiB 的读预取上限（`UPLOAD_READ_AHEAD_BYTES`，`responses_websocket.rs:120-122`、`:224-245`），避免读把写饿死。三 处合起来是一条完整的"读优先还是写优先"规则，代价是上传路径多了一次入站轮询与额度核算，错误优先级（缓冲的对端回复、本地发送失败、网络策略撤销）必须显式排序。
+服务端停止读取请求导致写阻塞、同时发来 Ping 或拒绝消息时，每帧发送之前先轮询入站，写处于 pending 时也轮询；后续轮询把 Tokio 的协作调度额度优先给待完成的写，并给整个上传过程设 1 MiB 的读预取上限（`UPLOAD_READ_AHEAD_BYTES`，`responses_websocket.rs:120-122`、`:224-245`），避免读把写饿死。三处合起来是一条完整的"读优先还是写优先"规则，代价是上传路径多了一次入站轮询与额度核算，错误优先级（缓冲的对端回复、本地发送失败、网络策略撤销）必须显式排序。
 
 终端工作区多了一个把文件摆到对话旁边的工具（提交 5824b3869）：`open_in_codex` 接受文件路径与可选的行号（从 1 起），请求排队等待界面就绪后在同一界面里打开——模型指出一段文档、一张图或某个源码行时，用户不用离开对话去找。环境启动失败的错误也走同一条截断逻辑（提交 357fe240c）：环境状态与 `wait_for_environment` 响应里给模型看的启动错误详情用 `ErrorContextBudget` 截断，保留每条 256 字节、环境状态错误详情合计 512 字节的上限，切点落在 UTF-8 字符边界上。
 
@@ -150,7 +150,7 @@ flowchart TD
 
 工具规格是上下文的大户，"按需加载 + 命名空间合并 + tool_search"三板斧都指向同一个目标：让接入一百个工具和接入三个工具的上下文开销差距尽量小。统一的路由层则让"审批、hook、遥测"这些横切关注点只写一遍。
 
-**executor 能力发现按线程缓存。** 四 处修补围着同一份缓存展开。缓存键是"环境、executor 会话、工作目录、沙箱"四元组，回合开始不再丢弃缓存；显式失效只影响下一次查找，进行中的读取可以带着旧结果完成；MCP 对账改用该步骤捕获的 inventory 并绑定当前 MCP 策略（`codex-rs/core/src/session/executor_discovery.rs:104-165`、`codex-rs/exec-server/src/capability_discovery_v2_cache.rs:33-83`，提交 e720e6c80）。环境就绪之前先预热远程 executor 的发现缓存，每个预热最多 5 秒，失败或超时都不阻塞环境启动；
+**executor 能力发现按线程缓存。** 四处修补围着同一份缓存展开。缓存键是"环境、executor 会话、工作目录、沙箱"四元组，回合开始不再丢弃缓存；显式失效只影响下一次查找，进行中的读取可以带着旧结果完成；MCP 对账改用该步骤捕获的 inventory 并绑定当前 MCP 策略（`codex-rs/core/src/session/executor_discovery.rs:104-165`、`codex-rs/exec-server/src/capability_discovery_v2_cache.rs:33-83`，提交 e720e6c80）。环境就绪之前先预热远程 executor 的发现缓存，每个预热最多 5 秒，失败或超时都不阻塞环境启动；
 
 缓存容量按选中的环境数预留，第一步就能直接复用，超时丢弃的 future 释放缓存条目、后续步骤可以重试（`executor_discovery.rs:20` 的 `DISCOVERY_PREWARM_TIMEOUT`、`:47-82`，提交 ffa05c8bf）。`capabilities/discoverV2` 请求新增 `forceReload`，让 executor 忽略自己的文件监听状态直接重扫；Codex 对每个被失效的上下文在下一次查找时带上该标志，显式重载同时替换缓存条目（`codex-rs/exec-server-protocol/src/capabilities.rs:39-45`，提交 15c5444e8）。失败也进了冷却：失败结果按上下文缓存，冷却期内直接返回缓存的错误，冷却后第一次查找重试，连续失败时延迟从 1 秒翻倍到 30 秒封顶，取消的加载不产生冷却，显式 refresh 清除冷却但不打断进行中的读取；
 
@@ -224,6 +224,8 @@ ChatGPT 连接器（connector，ChatGPT 侧的应用与工具集成）的工具�
 
 **文件元数据可以按批查了。** 新增协议方法 `fs/getMetadataBatch`，参数与响应按输入顺序逐项给出结果或错误，批大小受 1024 个路径与 1 MiB 编码字节双重上限约束（`codex-rs/exec-server-protocol/src/protocol.rs:45`、`:806`、`codex-rs/file-system/src/metadata_batch.rs:12`）。远端执行器声明支持后客户端才启用，沙箱文件系统在单次辅助进程调用里处理整批。指令与技能发现因此改成按文件名优先级合批：先查第一优先级的候选文件名，把未命中的目录攒成一批，再按 `.agents/skills` 在项目根到工作目录之间的全部路径合批（`codex-rs/core/src/agents_md.rs:287`、`codex-rs/ext/skills/src/host_roots.rs:340`）；不支持批处理的执行器退回逐个查询。沿祖先目录逐层查找多个文件名，在远端每次都是一次往返、在沙箱里还要起辅助进程；合批把"按目录 × 按文件名"的乘积压成按优先级的几轮。`tool_search` 的索引也从"工具规划阶段预建"改成首次检索且目录非空时在 blocking worker 上构建（提交 8a64bc9c7，`codex-rs/core/src/tools/handlers/tool_search.rs:366`）：同一个 handler 内普通检索与 Code Mode 检索共享同一次构建，发起构建的检索被取消不影响它继续——大多数回合根本不用 `tool_search`，预建索引的成本是浪费的。
 
+MCP 连接的可观测与认证又各进了一步。连接尝试回报启动耗时（提交 264f7d60f、abc92e6bd）：每次连接带启动计时，逐服务器分别报各自的启动时长——慢服务器不再混在总数里。扩展可以为 MCP 服务器供给按请求的认证（提交 7c5b5098f，`codex-rs/core/src/mcp.rs:444` 的 `with_request_auth_provider`）：扩展注册一个认证提供者，每个请求发出前问它要凭据，凭据过期也不必重建连接。session-start 钩子可以给会话注入加密的上下文（提交 5b10c107b）——上下文加密进钩子载荷，落盘的历史里看不到明文。桌面端的 MCP 连接改走 Unix 域套接字（提交 6aaf2a86b，`codex-rs/codex-mcp/src/runtime.rs:1313`），不再占用本地端口；控制器在线时远端控制的重连加快（提交 6a33df4e0）。
+
 ## 沙箱与审批
 
 ### 沙箱策略
@@ -235,7 +237,7 @@ ChatGPT 连接器（connector，ChatGPT 侧的应用与工具集成）的工具�
 - `external-sandbox`：声明"我已经在一个外部沙箱里了"（比如整个容器都是隔离的），Codex 不再自己加沙箱。
 - `danger-full-access`：完全放开。
 
-策略里有个精细设计：`workspace-write` 的可写根目录下，`.git`、`.codex` 这些路径仍然保持只读（代码里的说法是 read-only subpaths，只读子路径）。原因很直接：`.git/hooks` 里的脚本会在 git 操作时自动执行，如果 AI 能改它，就等于给了它一条绕过沙箱执行任意代码的暗道。这份保护名单里还有 `.aws`（工作区根和额外的可写根都覆盖）：AWS 的配置文件可以指定凭据助手（credential helper，需要凭据时执行的外部程序），应用会真的去执行它——能写 `.aws` 就可能间接左右"执行什么程序"。用户显式写的放行规则仍然优先于默认保护。
+策略里有个精细设计：`workspace-write` 的可写根目录下，`.git`、`.codex` 这些路径仍然保持只读（代码里的说法是 read-only subpaths，只读子路径）。原因很直接：`.git/hooks` 里的脚本会在 git 操作时自动执行，如果 AI 能改它，就等于给了它一条绕过沙箱执行任意代码的暗道。这份保护名单里还有 `.aws`（工作区根和额外的可写根都覆盖）。 Linux 沙箱的代理桥随后也要端口授权（提交 b0b0852ee）：受管网络上下文此前没有回环端口授权也可能经代理环境变量建起宿主代理桥——能通过桥到达宿主的哪些端口，改由受管网络政策决定。沙箱命令读受管代理路线的 CA 证书包也绑定到"路线准备时捕获的那份"（提交 1263a383a）：从命令环境或实时代理设置里现挑证书包，可能拿到与准备路线时不同的那一份，验证就落空了。AWS 的配置文件可以指定凭据助手（credential helper，需要凭据时执行的外部程序），应用会真的去执行它——能写 `.aws` 就可能间接左右"执行什么程序"。用户显式写的放行规则仍然优先于默认保护。
 
 ### 平台实现与防线的自检
 
@@ -253,7 +255,7 @@ SOCKS 代理的不透明 TCP 流量有了策略前置的上游隧道（`TcpUpstr
 
 权限档案在配置层的最后一批残留随后清掉了（提交 fe8e540a8、ce3031018、f626b8fde）。权限选择的解析集中进 `codex-config`：`resolve_permission_config`（`codex-rs/config/src/permission_config.rs:37`）按配置层优先级解析各层的选择器，保留会话层的显式档案选择与沙箱模式覆盖；legacy 沙箱设置到权限档案的翻译也共享一份（`permission_config.rs:80` 的 `translate_legacy_permissions`，保留合并的工作区根、网络访问、临时目录豁免与平台沙箱可用性，不改源层与字段出处）。
 
-`Config` 上的 legacy 沙箱策略 setter 与两个读取器删除，会话、审批与 Guardian 的测试改显式设权限档案；app-server 恢复覆盖不匹配的诊断用档案标签报告。细则三 处：只改工作目录不再经 legacy 策略重建权限档案（提交 9908717dd）——档案、活跃选择与档案工作区根保留，只更新运行时工作区根；恢复线程的沙箱覆盖比较改用活跃档案的 legacy 标签（提交 d3fc4a73b），不匹配时才构造 legacy 策略用于报告；会话设置的权限更新在准入时归一（提交 1f1f6ebb6）——legacy `sandbox_policy` 更新按新工作目录转成权限档案并清掉活跃档案身份，deny-read 限制在两种更新形式下都保留。
+`Config` 上的 legacy 沙箱策略 setter 与两个读取器删除，会话、审批与 Guardian 的测试改显式设权限档案；app-server 恢复覆盖不匹配的诊断用档案标签报告。细则三处：只改工作目录不再经 legacy 策略重建权限档案（提交 9908717dd）——档案、活跃选择与档案工作区根保留，只更新运行时工作区根；恢复线程的沙箱覆盖比较改用活跃档案的 legacy 标签（提交 d3fc4a73b），不匹配时才构造 legacy 策略用于报告；会话设置的权限更新在准入时归一（提交 1f1f6ebb6）——legacy `sandbox_policy` 更新按新工作目录转成权限档案并清掉活跃档案身份，deny-read 限制在两种更新形式下都保留。
 
 诊断与轨迹的标签字段跟着改名（提交 400a1e1e8）：采样诊断与 rollout trace 的 `sandbox_policy` 字段改为 `permissions_profile`，直接从权限档案推导；TUI 沙箱模式兼容性检查改从文件系统与网络权限直接构造 workspace-write 档案。
 
@@ -261,7 +263,7 @@ SOCKS 代理的不透明 TCP 流量有了策略前置的上游隧道（`TcpUpstr
 
 Windows 沙箱的文件系统覆盖解析统一到单一入口（提交 a90c80840，`codex-rs/sandboxing/src/windows.rs:36` 的 `resolve`，按提权与受限令牌选解析器），core、exec-server、direct-spawn 三处共用。MCP 的网络策略推导也有了组合逻辑（提交 b7d2321ef）：从控制器策略、权限档案、审批设置与已保存规则推导出 MCP 网络策略，受管限制优先；无法表达的检查（review 类、请求钩子、DNS 校验）一律保守拒绝；运行时更新与持久化串行化，拒绝清单先发布后写盘（`codex-rs/core/src/config/network_proxy_spec.rs:293` 的 `compose_environment_policy`）。
 
-Linux 沙箱的网络侧补了三 处。原生 TCP 客户端可以不经代理改造直连受管网络（提交 7194b2177）：`--transparent-tcp` 用自带的 TCP 协议栈加一块私有 TUN 网络接口和 DNS 桩，把原生的 IPv4/IPv6 连接透明地路由到带归属的受管 SOCKS 代理——应用自己不实现代理支持也能被政策管住；保留原始主机名供代理政策检查，原生套接字关闭时取消还在等审批的连接；要求私有网络与 PID 命名空间、私有 procfs、系统 `bwrap` 与 `/dev/net/tun`，不兼容的启动选项与不受信代理端口直接拒绝（`codex-rs/linux-sandbox/src/tcp_net_setup.rs:48-49`、路由模式 `codex-rs/linux-sandbox/src/proxy_routing.rs:389`）。
+Linux 沙箱的网络侧补了三处。原生 TCP 客户端可以不经代理改造直连受管网络（提交 7194b2177）：`--transparent-tcp` 用自带的 TCP 协议栈加一块私有 TUN 网络接口和 DNS 桩，把原生的 IPv4/IPv6 连接透明地路由到带归属的受管 SOCKS 代理——应用自己不实现代理支持也能被政策管住；保留原始主机名供代理政策检查，原生套接字关闭时取消还在等审批的连接；要求私有网络与 PID 命名空间、私有 procfs、系统 `bwrap` 与 `/dev/net/tun`，不兼容的启动选项与不受信代理端口直接拒绝（`codex-rs/linux-sandbox/src/tcp_net_setup.rs:48-49`、路由模式 `codex-rs/linux-sandbox/src/proxy_routing.rs:389`）。
 
 seccomp 过滤补了两个洞（提交 1bda88611、7eaaee427）：x32 ABI 与 x86-64 共享同一个审计架构值，只查架构拦不住 x32 调用方——现有的拒绝与套接字族条件同时应用到 x32 系统调用号（含 Linux 5.4 之前的遗留别名，`codex-rs/linux-sandbox/src/seccomp.rs:201-207`）；`request_key` 能调用宿主辅助程序、在沙箱网络命名空间之外发请求，`Restricted` 与 `ProxyRouted` 两种模式下按 `EPERM` 拒绝（`seccomp.rs:234-236`）。Windows 沙箱也补了四处细节（提交 5228d94a2、5a529c290、627b57921、a92eae089）：home 路径在发出沙箱开通与桌面注册请求前先规范化，保存的 junction 路径在恢复沙箱属主时解析并迁移，解析后的 home 持久化、卸载不再误删历史 junction 的目标；重复的沙箱设置保留文件权限；`cmd` 调用保留脚本里的引号；MXC 沙箱里 PowerShell 的工作目录恢复原状。
 
@@ -271,7 +273,7 @@ Bubblewrap 0.12 把 proc 挂载失败报在 `/proc`（旧版报在 `/newroot/pro
 
 **沙箱的启动与系统配置各归一处（2026-11-18）。** Linux 沙箱曾短暂掩蔽系统 SSH 配置 drop-in（提交 ad161203c），随后反转——这些 drop-in 不再被掩蔽（提交 595f497f1，现状以不掩蔽为准）；exec-server 的启动集中到 `WrappedSandboxCommand` 一处（提交 c65601417），沙箱的网络与 shell 凭据设置也收拢成一套（提交 05ae1b0fd）；继承 PID 命名空间的透明 TCP 有了支持（提交 5cba3aec8）；原生沙箱的可执行路径与 PTY 派发名得到保留（提交 c9df641ea）；Windows 沙箱服务的控制限制到受管路径（提交 84a93030e），沙箱随机密码保证含每个字符类（提交 04cfdee31）。
 
-**启动路径随后并成一条线（2026-11-19）。** Linux 与 macOS 共享同一个沙箱启动器（提交 097a8a743）——此前每个辅助进程各自执行一遍 `codex sandbox`，启动开销与代码路径都是双份；Seatbelt 命令的启动与等待退出拆开（提交 60fcb1649），管道 I/O 的命令可以正常起。准备工作归进平台后端（提交 6257fbc4b、a4495dd5c、6ee9bc1ba）：`SandboxManager` 负责后端选择与共享准备，准备好的 `SandboxExecRequest` 在核心里保持完整、随命令走完启动全程，进程类沙箱在启动准备阶段就选定——工作区相对的权限规则要对上实际执行环境才有意义。Linux 侧两笔：沙箱模式在启动辅助进程之前一次判定（提交 bcff988bd，受管代理路由需要 bubblewrap 的网络命名空间，模式判定不能等起完再改）；系统 `bwrap` 的用户命名空间检测用 pidfd 等子进程退出（提交 29091c723）——固定间隔轮询既慢又可能错过。Windows 三 处：开通请求的超时与管道关闭分开报告（提交 b78fa4af8）；缺失或过期的受保护 Core 注册自动修复（提交 2ae806bdf）；MXC 沙箱迁移到公开的 V1 SDK（提交 c39f047d2，`mxc-sdk`）。跨平台还有一类隐蔽问题：TUI 连到另一操作系统上的 app server 时，客户端与服务器对路径的想象可能不一致——沙箱可写根、工作区根与线程工作目录的解析结果都在客户端与服务器之间保留（提交 7d458c8fc、b967993f3、b82943092），`codex exec` 恢复时也保留已保存的沙箱权限（提交 89feadf3c）——resume 此前把当前进程的沙箱默认值发了过去。
+**启动路径随后并成一条线（2026-11-19）。** Linux 与 macOS 共享同一个沙箱启动器（提交 097a8a743）——此前每个辅助进程各自执行一遍 `codex sandbox`，启动开销与代码路径都是双份；Seatbelt 命令的启动与等待退出拆开（提交 60fcb1649），管道 I/O 的命令可以正常起。准备工作归进平台后端（提交 6257fbc4b、a4495dd5c、6ee9bc1ba）：`SandboxManager` 负责后端选择与共享准备，准备好的 `SandboxExecRequest` 在核心里保持完整、随命令走完启动全程，进程类沙箱在启动准备阶段就选定——工作区相对的权限规则要对上实际执行环境才有意义。Linux 侧两笔：沙箱模式在启动辅助进程之前一次判定（提交 bcff988bd，受管代理路由需要 bubblewrap 的网络命名空间，模式判定不能等起完再改）；系统 `bwrap` 的用户命名空间检测用 pidfd 等子进程退出（提交 29091c723）——固定间隔轮询既慢又可能错过。Windows 三处：开通请求的超时与管道关闭分开报告（提交 b78fa4af8）；缺失或过期的受保护 Core 注册自动修复（提交 2ae806bdf）；MXC 沙箱迁移到公开的 V1 SDK（提交 c39f047d2，`mxc-sdk`）。跨平台还有一类隐蔽问题：TUI 连到另一操作系统上的 app server 时，客户端与服务器对路径的想象可能不一致——沙箱可写根、工作区根与线程工作目录的解析结果都在客户端与服务器之间保留（提交 7d458c8fc、b967993f3、b82943092），`codex exec` 恢复时也保留已保存的沙箱权限（提交 89feadf3c）——resume 此前把当前进程的沙箱默认值发了过去。
 
 沙箱的运行细节继续补齐。远程 exec-server 的连接可能在建立阶段碰上传输提前关闭——初始化响应还没到客户端，连接就断了，等待就绪的调用方拿到失败，而片刻之后新连接本可以成功；这类瞬时失败现在重试（提交 93000976e）。Windows 侧补了两笔诊断：安全策略拦下沙箱账户登录、命令起不来时，错误不再只有失败的 API 调用名与数字错误码，附上可读的原因（提交 bc75380d6）；MXC 沙箱的启动失败与超时带阶段级信息——启动器走到了哪一步、各步花了多久（提交 739f934a1）。运行时沙箱完整性检查暂时停用（提交 c332754aa）：这套只做遥测的检查与沙箱强制已做的政策准备重复。托管代理设置改为每条沙箱命令只准备一次（提交 e1b755849）：代理设置绑定命令的执行环境，启动时再准备一遍会覆盖已绑定的设置——包括为它的 shell 准备好的凭据。unified exec 的拒绝检查不再多等（提交 ab1ad9299）：输出流已关闭、拒绝上下文已齐时，20 毫秒的额外等待直接跳过。
 
@@ -313,13 +315,15 @@ flowchart TD
 
 **权限授予的时效与归属**是这套体系里最容易出隐蔽 bug 的地方。权限授予明确绑定到**发起它的那个回合**：回合范围的授权与严格评审状态随回合上下文（TurnContext）保存，由捕获的步骤和后台单元持有；权限请求的答复记在发起请求的回合名下，哪怕答复到达时已经切换了回合；会话范围的授权照常跨回合共享，回合范围的彼此隔离。之所以这样设计，是因为后台 code-mode 单元可以在新回合开始后继续跑，按"当前回合"查授权，它要么丢掉自己已获批的访问、要么误用别的回合的权限。配套地，扩展与技能的文件系统访问收紧到**回调自己的权限**：扩展工具和回合输入贡献者拿到的是借出的环境访问对象（`EnvironmentAccess`，`codex-rs/file-system/src/environment_accessor.rs:31`——只能借道产生它的环境做文件操作，拿不到底层文件系统、也换不了沙箱）；技能侧把这条约束贯穿到底（提交 526f6099f、afefd0ba9、0b21a5b52、007f668c3）：技能根的解析、目录发现、路径规范化与元数据读取全走借出的访问对象；仓库技能的指令内容用"当下"的访问对象读取，授权被撤销或技能文件被换成指向禁区的符号链接（symlink，指向另一个路径的文件别名）后就拒绝读，缓存只记文件系统身份、不保留无限制的读通道；目录发现跟着工作目录与权限走，权限变化触发重新发现，授权到期让技能消失、恢复授权让它回来时，目录给模型发可用性通知——即使元数据用量 budget 已经耗尽。技能分页快照绑定到"源文件系统加回调权限"的组合键上——缓存的页面不再脱离产生它的权限而存在。冷恢复（进程重启后不带内存现场重新打开会话）时，从该线程自己的设置快照还原合资格的权限配置，命名权限以自有快照为准，已保存的未命名权限配置不会被当前配置默认值顶掉。
 
-按用途扩容的方向有一条：`/daybreak` 开关为网络安全工作开放更广的访问（cyber 访问程序从所连服务器的模型目录里选择），启用需要登录 ChatGPT 账户、OpenAI 提供方和确认模型支持，选择持久化在线程元数据里、恢复会话时还原，侧对话一律不启用。`cli_daybreak` 已转为稳定并默认启用，Cyber 访问程序对 API-key 会话默认开放。模型发现也分得清两种不可用（提交 1826d80ec）：调用方需要注册 Daybreak，与模型本身不支持 Daybreak，各有各的说法——单看已接受的访问程序清单表达不出这个区别。权限档案在会话与回合两级各补了一 处（提交 486c779c3、76dcb8199、551fc719d）。
+按用途扩容的方向有一条：`/daybreak` 开关为网络安全工作开放更广的访问（cyber 访问程序从所连服务器的模型目录里选择），启用需要登录 ChatGPT 账户、OpenAI 提供方和确认模型支持，选择持久化在线程元数据里、恢复会话时还原，侧对话一律不启用。`cli_daybreak` 已转为稳定并默认启用，Cyber 访问程序对 API-key 会话默认开放。模型发现也分得清两种不可用（提交 1826d80ec）：调用方需要注册 Daybreak，与模型本身不支持 Daybreak，各有各的说法——单看已接受的访问程序清单表达不出这个区别。权限档案在会话与回合两级各补了一处（提交 486c779c3、76dcb8199、551fc719d）。
 
 线程元数据默认的 `sandbox_policy` 改为序列化的 `PermissionProfile::read_only()`（`codex-rs/state/src/model/thread_metadata_builder.rs:187`），与回合上下文、会话设置的格式一致；executor 能力发现尊重已批准的文件系统授权——会话级授权作用于能力发现并在变化后刷新 MCP，回合级授权的技能发现走独立清单（插件服务器与 hooks 仍在会话清单，回合级授权绕不过禁用插件策略，`codex-rs/core/src/session/mod.rs:4401-4564`）；会话权限授予后标记 MCP 需要刷新时带上新枚举 ``SessionPermissionsGranted`（`codex-rs/core/src/thread_manager.rs:302`、`codex-rs/core/src/session/mod.rs:3814`）。
 
 **V3 证据链的订阅与投递进度随后定稳。** 频道订阅与待投递证据从持久化存储挪进活着的评审者收件箱（提交 e00c64fb6，`codex-rs/ext/guardian-v3/src/inbox.rs:150` 的 `ActorInbox`、`:258` 的 `subscribe`、`:268` 的 `deliver`）：替换会话复用同一个收件箱，重启后重新加载的评审者从空收件箱与空订阅集开始——证据不再投进没人接收的位置；一次证据提交按匹配的收件箱各投一次，多个频道匹配同一条也只投一次；退订保留已选中的证据，关闭收件箱阻止待投递落到同一 agent 的后续评审者。路由进度挂到活动的 agent 树上（提交 8b02797a2，`codex-rs/ext/guardian-v3/src/cutoff.rs:24`、`:71`）：root 卸载重载后从最后一个完成的位置继续补，存活子评审者保留订阅、排队证据与可复用会话；证据在写入成功时立刻投给订阅者、按原始条目去重，优雅卸载时先把当前位置路由完。绑定待审动作时只记录 root 的历史位置，真正准备审查时才触发路由，重试或授权在首次尝试期间变化时重新取位置；原先的一次性回执改成 `watch` 位置标记，`wait_until_routed` 等到抵达目标位置才提交评估（提交 223b61a9a）。
 
 证据的两侧一减一加。图片附件与成对的 local-image 标签在额度计算与序列化之前剔除，保留 caption 与来源，纯图片消息整条跳过并推进游标——单张大图不该吃光 housekeeper 的工具输出额度（提交 6dbb6330a，`codex-rs/ext/guardian-v3/src/evidence.rs:340`）。完成态的音频转写随源历史条目进入证据选择，带来源标签区分语音与键入文本、标明来源回合或工具调用；行格式里对语音加引号并转义，防止语音内容伪造出新的 role 头（提交 177c40627）；新增可选的 `transcript_audio` 弹性额度，未配置时用户语音走消息额度、工具语音走工具额度（`codex-rs/guardian-context/src/allocation.rs:141`）。serving probe 的结果也带进审查上下文，准备日志输出 `tool_call_id` 与 `probe_review`（`required`、`not_required`、`not_reported`），只做观测、审批结论仍由审查判定（提交 790ecc338）。代价：评审者重启会丢订阅与排队证据（只有重载 root 时子评审者存活才保留），路由进度依赖 housekeeper 持续运行。
+
+沙箱重试从此按已评审的权限决定（提交 f67868d05）：重试决策从最初的沙箱尝试推导——政策允许无沙箱重试时清掉沙箱设置并把命令标为 `RequireEscalated` 走审批；政策要求沙箱保持时复用最初尝试，网络重试不会丢掉文件读取限制。已保存的命令放行规则也补了一处越界（提交 f22cc03b0）：保存的 allow 规则能跳过评审，授权不了更宽的文件系统访问——沙箱强制读取拒绝时，显式的提权请求此前带着基线权限就跑了；现在 Guardian 能评审这类请求、执行器也能保住拒绝清单。`codex exec` 也不能再把审批政策强设为 `never`（提交 6b776372f）：新线程的配置审批与续线程的已保存审批都照常生效。`resume --approve-for-me` 的授权范围收窄到最初那次对话（提交 7ce443748）。
 
 ### Guardian：审批把关与独立评审
 
@@ -368,7 +372,7 @@ flowchart TD
 
 **评审请求跟父请求走同一条路**：共享的路由 cookie 会在父连接建立之后变化，评审若被路由到别处，父响应在服务端的状态就对不上；现在 ChatGPT WebSocket 握手成功时捕获路由 cookie（`__oailb`、`__cflb`）并与父响应 ID 配对，整个评审与重试期间沿用这份快照，只用于匹配该父响应的 Guardian 请求，父响应的路由亲和（affinity，让一组相关请求落到同一台后端）变了就重连缓存的评审者套接字；cookie 保留到期时间、只在原安全来源与端点路径复用，不进提示词、历史与日志（提交 e742db9f）。
 
-**直评把三类记录动作补齐了**。`guardian_review` 用独立评审者评一份**记录下来的**动作而不发布现场审批，此前只覆盖 `exec_command`。现在：原生 `apply_patch` 调用进评审——复用既有的补丁准备与审批逻辑、不真正应用补丁，无需审批的调用直接跳过评审（提交 84dfc209d，PR 58899）；经 `exec_command` 传达、被拦截成补丁的调用（heredoc 写法）也进评审——此前直评拒绝这类调用、正常执行却能评审，现在拦截补丁的准备在执行与直评之间共享，评审者评的是验证过的补丁及其审批要求（`codex-rs/core/src/guardian/recorded_tool_call.rs:150`、`:171`，提交 451787127，PR 58931）；最终记录的 `request_permissions` 权限请求同样可评——评审动作用与实时评审相同的准备，但不授予任何权限，审批策略为 never 或细粒度策略禁用权限请求时不出评估（提交 f04090521，PR 58903）。配套三 处：评审恢复保持 Guardian 的 budget 政策、弹性准备中推迟上下文裁剪、永久删除线程时清掉 Guardian 证据板（提交 9ede2e87c、a54329e23、43ad1cbf3）。
+**直评把三类记录动作补齐了**。`guardian_review` 用独立评审者评一份**记录下来的**动作而不发布现场审批，此前只覆盖 `exec_command`。现在：原生 `apply_patch` 调用进评审——复用既有的补丁准备与审批逻辑、不真正应用补丁，无需审批的调用直接跳过评审（提交 84dfc209d，PR 58899）；经 `exec_command` 传达、被拦截成补丁的调用（heredoc 写法）也进评审——此前直评拒绝这类调用、正常执行却能评审，现在拦截补丁的准备在执行与直评之间共享，评审者评的是验证过的补丁及其审批要求（`codex-rs/core/src/guardian/recorded_tool_call.rs:150`、`:171`，提交 451787127，PR 58931）；最终记录的 `request_permissions` 权限请求同样可评——评审动作用与实时评审相同的准备，但不授予任何权限，审批策略为 never 或细粒度策略禁用权限请求时不出评估（提交 f04090521，PR 58903）。配套三处：评审恢复保持 Guardian 的 budget 政策、弹性准备中推迟上下文裁剪、永久删除线程时清掉 Guardian 证据板（提交 9ede2e87c、a54329e23、43ad1cbf3）。
 
 **自适应评审改用服务端评估**（提交 9def09af）：模型的最终 serving assessment（响应元数据里那类 Guardian 评估）现在与响应和输出项配对，随工具调用与代码单元格跨等待保留；自适应评审用配上的评估代替异步评分——低风险动作可以跳过同步评审，高风险动作必须过。批准之前重新校验捕获的授权与政策：授权过期或不完整就要求重新评审，钩子改写动作时评估作废；评估缺失或对不上时，异步评分仍是后备。**评完不改历史也能评**（提交 3535c22b、6174d05a）：`CodexThread::guardian_review` 对历史里最后一条注入的 `exec_command` 做评审而不执行——复用命令准备与审批政策，拒绝活跃线程、被 `apply_patch` 拦截的调用与含 `request_permissions` 的历史；
 
@@ -436,6 +440,8 @@ housekeeping 的运行时骨架随后补齐（提交 cd1805370、9544f09e7、563
 
 **政策刷新与线程启动彼此协调。** 线程可能恰在受管 Guardian 政策刷新的中途启动（提交 b0ecad9cf）：启动与刷新先相互登记先后，线程不再注册到一条已被刷新取代的政策上。配置重载与账号变化也触发刷新（提交 db263d4f5）：用户重载配置、登录或登出之后，运行中的线程拿得到新的审批要求与政策。刷新的生效也不再迟滞（提交 90dd6cf9d）：新政策不允许线程当前使用的模型时，线程立即受新限制约束；托管政策源已变更、尚未发布期间，刷新不再报成功。评审者的提供方选择放宽了两处：显式配置 Guardian 提供方此前会顺带关掉 V2 评分——自动评审拿不到这个提供方的后台评分，现在两者并存（提交 efcc0cf91）；宿主还能为 Guardian 指定独立的推理提供方（提交 5f8c36e83）——执行者跑在一家提供方上，评审可以路由到另一家，评审者政策与模型能力从 Guardian 自己的提供方解析。异步评分不再被 serving probe（上报"这条无需评审"的检测请求）旁路（提交 3869f396a）：异步路径保持活跃，Guardian 把两个信号放在一起比对。附加评审（attached，待决动作绑定的那名评审者）也尊重弹性额度（提交 d52a39b30）：此前它用固定证据上限，精确参数本放得下的待决工具调用会被拒之门外。执行政策规则的内存表示拆成独立 crate `execpolicy-rules`（提交 5bdb5e8b3）：配置、协议与提示词代码此前要透过 `codex-execpolicy` 连带拉进 Starlark 解析器，拆开后各取所需。
 
+评审的输入与证据又收紧了一轮。Guardian 的首次裁决前先读用户指令（提交 6d0d839f1）：待决动作此前不带用户的原话，一个看起来低危的动作可能在没有上下文的情况下被放行——现在评审请求里带上用户指令。根线程历史的 pending 追加先落盘再定证据截止（提交 986304388）：内存里可见的指令、持久历史里还没有，V3 读的是持久历史，评审可能错过一条刚写入、还没确认的"撤销授权"；现在追踪与评审相关的待追加写入，确认落盘后才捕获证据截止。同一根线程的并发评审合并历史冲刷与读取（提交 e713c4c30）。评审请求可以指定明确的工具调用（提交 53fe98bdc）：客户端可能记录的是一段 exec 脚本、要评审的却是其中一次 `exec_command`——选历史的最后一项不再等于选要审的那个调用。本机 agent 的待决调用在评审上下文里与历史工具调用并存，显式的请求边界标出 Guardian 该审哪一次（提交 a2c17b833）。根线程就绪时就预热 V3 根评审者（提交 5716c2e22）：第一次审批不用再等评审者冷启动。录制进存档的评审补上两个来源的证据：托管 agent 用根证据（提交 20c7f26cd），录制内容带父级证据（提交 e1492bd86）；调用方取消时已捕获的证据保留（提交 4ec69d3c5）。
+
 ### 凭据与出口流量
 
 密钥优先存进系统钥匙串（keyring，操作系统提供的加密存储），退一步存文件时也放在受保护的路径里。网关的 OAuth 凭据存哪可以显式选（2026-10-31，PR 58219）：`credentials_store = "file"` 时写进 `$CODEX_HOME/secrets/gateway_oauth.json`，原子写（先写临时文件再整体替换）；默认仍是 keyring——钥匙串在就用钥匙串，选文件是为了 headless 容器这类没有钥匙串服务的环境。凭据往远端送的路上，每个泄漏点各有一道防护：出现在命令输出里的凭据做掩码（远端命令与 Zsh shell 快照下都支持，PR 54309、54432）；执行器凭据按作用域授权，而不是一张全局通行证（PR 54346）；长期挂着的 stdin 凭据可以轮换（PR 54434）；大文件的内容不经模型上下文，直接走 exec-server 的 WebSocket 写入（PR 54135）。
@@ -454,7 +460,7 @@ housekeeping 的运行时骨架随后补齐（提交 cd1805370、9544f09e7、563
 
 错误语义也随之定型（提交 efdacaf46）：401/403 且带 `runtime_assertion_invalid` 这类身份错误码的失败判定为"运行时拒绝"，重试与刷新凭据都修不了它，重试延迟直接返回不安排（`codex-rs/protocol/src/error.rs:643` 的判定、`:430-438` 返回 None）。管理模式补齐（提交 10cf2b9ea）：`requirements.toml` 可以把运行时认证的模式固定为 `dual_header` 或 `assertion_only`，未显式配置时应用必需模式、冲突配置报错（`codex-rs/core/src/config/managed_features.rs:365`、`:400`）。
 
-凭据外围还有三 处。登录向导（提交 2497eab25）：默认关闭的 `gateway_setup_wizard` feature（`codex-rs/features/src/lib.rs:2276-2277`）让本地登录流程里可以从已保存的自定义网关中选一台（`codex-rs/tui/src/onboarding/gateway.rs:32` 的状态机），选定后以该提供方重启内嵌 app-server、先完成主认证与网关 OAuth 再开始对话。向导随后补上了"没有已存网关"的情形（提交 d960b3669）：选择列表末尾新增"Create a custom provider or gateway"入口（`codex-rs/tui/src/onboarding/gateway.rs:159-163`），进入复用设置页表单的编辑与保存两态（`:41-49`、`:80-107` 走 provider-write RPC），保存成功回到列表并高亮新建条目、必须显式选中才设为默认并完成登录，校验失败保留已填字段（`:100-105`）；自定义提供方也不能再占用内置提供方的 ID（`codex-rs/app-server/src/config_manager_service_provider_write.rs:91-95` 的错误文案）——此前网关 ID 用的是保留值 `ollama-chat` 顶位。
+凭据外围还有三处。登录向导（提交 2497eab25）：默认关闭的 `gateway_setup_wizard` feature（`codex-rs/features/src/lib.rs:2276-2277`）让本地登录流程里可以从已保存的自定义网关中选一台（`codex-rs/tui/src/onboarding/gateway.rs:32` 的状态机），选定后以该提供方重启内嵌 app-server、先完成主认证与网关 OAuth 再开始对话。向导随后补上了"没有已存网关"的情形（提交 d960b3669）：选择列表末尾新增"Create a custom provider or gateway"入口（`codex-rs/tui/src/onboarding/gateway.rs:159-163`），进入复用设置页表单的编辑与保存两态（`:41-49`、`:80-107` 走 provider-write RPC），保存成功回到列表并高亮新建条目、必须显式选中才设为默认并完成登录，校验失败保留已填字段（`:100-105`）；自定义提供方也不能再占用内置提供方的 ID（`codex-rs/app-server/src/config_manager_service_provider_write.rs:91-95` 的错误文案）——此前网关 ID 用的是保留值 `ollama-chat` 顶位。
 
 账号安全提醒（提交 4be90eb06）：app-server 新增 `account/securitySetup/read`，只在保存的登录与活动登录一致（且非 FedRAMP 环境）时才代拉安全设置提醒，3 秒超时，条件不满足或失败一律返回空——TUI 不再自己拿认证去请求。子进程日志脱敏（提交 738ef9f3b）：`spawn_child_async` 的 trace 日志不再输出命令参数与环境变量内容（两者都可能夹带凭据），改为数量计数（`codex-rs/core/src/spawn.rs:61-76` 的 `arg_count`/`env_count`），程序路径、工作目录与沙箱策略保留。
 
@@ -550,9 +556,9 @@ flowchart TD
 凡是会破坏请求前缀稳定性的因素，都尽量固定下来，落在三处：
 
 - **历史只追加**（注入纪律的直接动机，见上）。
-- **工具目录走增量**（`incremental_tools`，2026-10-20 起稳定并默认启用，提交 c953dacb）：工具定义改由 world state 和会话历史跟踪，初始目录只发一次，之后每个请求只追加新增或变更的定义，更早的请求历史原样保留；被移除的工具和命名空间指令的变化以 developer 通知发出（一批命名空间更新合并成一条通知，不逐条刷屏）；普通请求与远程压缩都改用历史提供的定义，目录哈希跨 JSON 键序保持稳定（同样的定义无论键怎么排都算同一个）；模型目录可以按模型覆盖增量通知的行为，增量更新有自己的指标。延迟工具（deferred，注册了但不进默认清单、等工具搜索或指名加载的）的命名空间也搬进了 world state（`deferred_tool_world_state`，2026-10-31 起默认启用，`codex-rs/features/src/lib.rs:1736-1741`）——跟踪方式与普通工具一致，工具搜索的描述随之变瘦。工具清单每个请求重发一遍，前缀缓存就永远断在清单那一处；清单稳定、变更增量，缓存才可能贯穿整个会话。配套两处稳定化：Code Mode 的 `exec` 描述不随目录变化而变（工具发现指导总是包含，哪怕当前没有延后工具），MCP 工具结果在分页历史里按上限截断并计入 JSON 序列化的开销。普通 OpenAI Responses 请求也可以选择走增量——`incremental_tools_legacy` 开关（提交 55897425e，默认关闭，`codex-rs/features/src/lib.rs:1805`）；它的适用面随后从所有 OpenAI 提供方缩小到 Bedrock 两个提供方 ID（提交 762f87d5b，`codex-rs/core/src/session/step_context.rs:66-68`）——Responses Lite 路线改走下面的增量 exec 目录；这条支线随后转了向：Bedrock 两个提供方与 GCP 的增量声明默认开启（提交 27e2227b2、0d37c062d、b117b2d6f，`codex-rs/features/src/lib.rs:1861-1869` 两个特性都是 `default_enabled: true`）——增量从可选项变成了这些提供方的默认形态；保留的命令会话（unified exec 的常驻会话）也进了 world state 快照（提交 d4902cedb，`codex-rs/core/src/context/world_state/command_sessions.rs:16` 上限 16 条、`:53` 实现同一个节接口）——压缩之后，模型仍然知道哪些命令会话活着。
+- **工具目录走增量**（`incremental_tools`，2026-10-20 起稳定并默认启用，提交 c953dacb）：工具定义改由 world state 和会话历史跟踪，初始目录只发一次，之后每个请求只追加新增或变更的定义，更早的请求历史原样保留；被移除的工具和命名空间指令的变化以 developer 通知发出（一批命名空间更新合并成一条通知，不逐条刷屏）；普通请求与远程压缩都改用历史提供的定义，目录哈希跨 JSON 键序保持稳定（同样的定义无论键怎么排都算同一个）；模型目录可以按模型覆盖增量通知的行为，增量更新有自己的指标。附加上下文的提交基线也搬进了 world state（提交 ff2ee6212，`codex-rs/core/src/context/world_state/additional_context.rs:32`）：此前"哪些客户端提交已经进过历史"的基线只在内存里，恢复会话可能把同样的附加上下文再追加一遍；现在基线随会话持久，客户端提交替换活跃来源、扩展输入只更新自己的键。Responses 流的两笔：文本与自定义工具输入的增量默认不再带序号（提交 98f8a3311）——Codex 本来就不用它们，白占字节；流式被抑制时响应条目推迟到完成后才解析（提交 cba3c40cf）——邮箱抢占会丢弃半截条目、回合贡献者会改写已完成条目，到手的半成品先解析一遍是白做。模型目录可以从 Responses WebSocket 握手刷新了（提交 198592563，`codex-rs/codex-api/src/endpoint/responses_websocket.rs:75` 的握手 `x-models-etag`）：服务器只在握手头里宣告新目录时，此前没有渠道感知、目录一直陈旧。延迟工具（deferred，注册了但不进默认清单、等工具搜索或指名加载的）的命名空间也搬进了 world state（`deferred_tool_world_state`，2026-10-31 起默认启用，`codex-rs/features/src/lib.rs:1736-1741`）——跟踪方式与普通工具一致，工具搜索的描述随之变瘦。工具清单每个请求重发一遍，前缀缓存就永远断在清单那一处；清单稳定、变更增量，缓存才可能贯穿整个会话。配套两处稳定化：Code Mode 的 `exec` 描述不随目录变化而变（工具发现指导总是包含，哪怕当前没有延后工具），MCP 工具结果在分页历史里按上限截断并计入 JSON 序列化的开销。普通 OpenAI Responses 请求也可以选择走增量——`incremental_tools_legacy` 开关（提交 55897425e，默认关闭，`codex-rs/features/src/lib.rs:1805`）；它的适用面随后从所有 OpenAI 提供方缩小到 Bedrock 两个提供方 ID（提交 762f87d5b，`codex-rs/core/src/session/step_context.rs:66-68`）——Responses Lite 路线改走下面的增量 exec 目录；这条支线随后转了向：Bedrock 两个提供方与 GCP 的增量声明默认开启（提交 27e2227b2、0d37c062d、b117b2d6f，`codex-rs/features/src/lib.rs:1861-1869` 两个特性都是 `default_enabled: true`）——增量从可选项变成了这些提供方的默认形态；保留的命令会话（unified exec 的常驻会话）也进了 world state 快照（提交 d4902cedb，`codex-rs/core/src/context/world_state/command_sessions.rs:16` 上限 16 条、`:53` 实现同一个节接口）——压缩之后，模型仍然知道哪些命令会话活着。
 
-Code Mode 的 exec 工具目录也接入增量（提交 2bc8e7f54、33b3f80a0、5226f2fb4）。目录渲染时为每个工具条目与命名空间说明产出稳定键（`codex-rs/code-mode-protocol/src/description.rs:165` 的 `ExecDefinition`），变更以增量的 developer 消息追加；exec 定义经 `ToolRouter` 传进会话的顶层工具状态（`codex-rs/core/src/tools/router.rs:104`、`:169`，`codex-rs/core/src/session/world_state.rs:208-218` 装入），在 Code Mode Only 加 Responses Lite 且两个增量开关同开时生效（`codex-rs/core/src/context/world_state/top_level_tools.rs:112-119`）；新增两个指标分别按新增/变更/移除计数与按渲染字节计量（`codex-rs/otel/src/metrics/names.rs:126`、`:129`，打点在 `top_level_tools.rs:404-409`）。配套一 处可见性（提交 57a808a39）：exec 请求可能在代码单元格开始事件到来之前就失败，调度级的派发 trace 一律记录，失败调用与结果在回放里可见，不再被抑制（`codex-rs/rollout-trace/src/tool_dispatch.rs:141-145`）。
+Code Mode 的 exec 工具目录也接入增量（提交 2bc8e7f54、33b3f80a0、5226f2fb4）。目录渲染时为每个工具条目与命名空间说明产出稳定键（`codex-rs/code-mode-protocol/src/description.rs:165` 的 `ExecDefinition`），变更以增量的 developer 消息追加；exec 定义经 `ToolRouter` 传进会话的顶层工具状态（`codex-rs/core/src/tools/router.rs:104`、`:169`，`codex-rs/core/src/session/world_state.rs:208-218` 装入），在 Code Mode Only 加 Responses Lite 且两个增量开关同开时生效（`codex-rs/core/src/context/world_state/top_level_tools.rs:112-119`）；新增两个指标分别按新增/变更/移除计数与按渲染字节计量（`codex-rs/otel/src/metrics/names.rs:126`、`:129`，打点在 `top_level_tools.rs:404-409`）。配套一处可见性（提交 57a808a39）：exec 请求可能在代码单元格开始事件到来之前就失败，调度级的派发 trace 一律记录，失败调用与结果在回放里可见，不再被抑制（`codex-rs/rollout-trace/src/tool_dispatch.rs:141-145`）。
 
 更新消息的两条措辞随后开放给模型目录覆盖（提交 c3936b4b8）：`model_messages.tools.incremental_tools` 下新增可选的 `exec_tools_update_hint` 与 `exec_tools_removed_definitions_header`（`codex-rs/protocol/src/openai_models/incremental_tools.rs:26`、`:29`），解析层带内置默认措辞（`codex-rs/prompts/src/model_messages/incremental_tools.rs:14-15`、`:51-58`），渲染更新提示与移除通知时改用解析结果（`codex-rs/core/src/context/world_state/top_level_tools.rs:555` 起，移除通知从固定常量改为带 `header` 字段的结构体、`:571`、`:595`）。
 
@@ -594,7 +600,7 @@ flowchart LR
 
 最后通过应用服务器的警告把恢复能力说清楚：已保存的对话能恢复线程列表和历史，只存在数据库里的部分元数据可能拿不回来。数据库放在 NFS（网络文件系统）上时 WAL（write-ahead log，预写日志）模式不可靠，实验性命令 `codex migrate-nfs-db`（`codex-rs/cli/src/main.rs:224`，提交 3c4c04b2）把配置里的 SQLite WAL 数据库就地换成 `DELETE` 日志模式的已校验副本：转换先在本地暂存、安装前检查完整性、原文件与 sidecar 文件保留在备份目录、中断后可续做；要求确认与独占访问，所有主机上的 Codex 实例都得停掉直到迁移成功，NFS 挂载须支持跨客户端的 POSIX 锁，不支持的文件权限与 ACL 直接拒绝，迁移之间用迁移锁串行。
 
-新数据库不再需要这道迁移（2026-10 下旬，提交 0d7f3ea0）：初始化时按数据库所在目录检测文件系统，NFS 上直接以 DELETE 日志建库并配 `synchronous = EXTRA`，其他文件系统仍是 WAL；已有库保持原样，日志目录独立于状态目录单独检测（`codex-rs/state/src/sqlite.rs:2`、`:609-610`）。并发启动与并发读写随后补了三 处。schema 检查与迁移此前依赖 SQLx 的迁移锁，而那把锁在 SQLite 上是空操作——两个进程同时开库，一个可能在做版本检查、另一个已经改了表结构；现在检查与迁移放进同一个事务、busy 错误从新快照重试，schema 已是最新时只需读锁，NFS 上也一样（提交 9e77fb4ad）。
+新数据库不再需要这道迁移（2026-10 下旬，提交 0d7f3ea0）：初始化时按数据库所在目录检测文件系统，NFS 上直接以 DELETE 日志建库并配 `synchronous = EXTRA`，其他文件系统仍是 WAL；已有库保持原样，日志目录独立于状态目录单独检测（`codex-rs/state/src/sqlite.rs:2`、`:609-610`）。并发启动与并发读写随后补了三处。schema 检查与迁移此前依赖 SQLx 的迁移锁，而那把锁在 SQLite 上是空操作——两个进程同时开库，一个可能在做版本检查、另一个已经改了表结构；现在检查与迁移放进同一个事务、busy 错误从新快照重试，schema 已是最新时只需读锁，NFS 上也一样（提交 9e77fb4ad）。
 
 线程元数据的写入合并成一次原子 upsert（观察到的元数据、内存模式与最近活跃推进一起生效，最近活跃保持单调），分页线程的元数据写失败时保留待重试，一次失败的写入不再留下半套改动（提交 c60cda34a）。installation_id 的读取改用共享锁，内容缺失或非法时才升独占锁重读再生成——别的进程初始化好的 ID 直接复用，读它的人不必排队（提交 036e16018）。
 
@@ -614,7 +620,7 @@ flowchart LR
 
 rollout 录制的完成与失败有了明确形状（提交 297f5e33）：启用的录制器初始化失败会让线程启动或恢复直接失败（会话资源照常清理），不再静默没有轨迹；回放校验跟着补齐——完成标记必须是一条以换行结束的 `RecordingCompleted` 记录（缺尾换行的不完整轨迹不再被当成完整的），不透明的 JSON 载荷先按 UTF-8 文本读、再验 JSON 结构（提交 e9854c0a）。派生关系先于子历史落库（提交 875a1a78）：先预留子线程 ID、写入派生边，再启动子线程、建它的存储——顺序反了，按父子树删除时可能发现不了子历史（分叉启动复制历史时尤其如此），关系写入失败向上传播给调用方。
 
-五 处基础随后补齐（提交 caae161dd、ab541fb99、ac37f98c7、4dcd8df89、d15bf1deb）。诊断日志库打不开（非损坏类错误）不再禁用线程存储与仅库历史列表：TUI 与 app-server 在 tracing 装好后上报原始错误，诊断存储失败时拒绝线程删除，免得跳过保存会话的清理（`codex-rs/state/src/runtime.rs:163-168`，日志池字段 `:105-106`）。`ThreadMetadataBuilder` 独立成模块、字段私有化、fluent 构造（提交 ab541fb99）；默认 approval mode 改为 `OnRequest`、`updated_at` 与 `recency_at` 取创建时间是其中两处轻微行为点。
+五处基础随后补齐（提交 caae161dd、ab541fb99、ac37f98c7、4dcd8df89、d15bf1deb）。诊断日志库打不开（非损坏类错误）不再禁用线程存储与仅库历史列表：TUI 与 app-server 在 tracing 装好后上报原始错误，诊断存储失败时拒绝线程删除，免得跳过保存会话的清理（`codex-rs/state/src/runtime.rs:163-168`，日志池字段 `:105-106`）。`ThreadMetadataBuilder` 独立成模块、字段私有化、fluent 构造（提交 ab541fb99）；默认 approval mode 改为 `OnRequest`、`updated_at` 与 `recency_at` 取创建时间是其中两处轻微行为点。
 
 app-server 在 `TurnStarted` 时重置回合摘要（保留 `started_at`，清除既有错误与最后 agent 消息，提交 ac37f98c7，`codex-rs/app-server/src/bespoke_event_handling.rs:163`）——回合前的旧错误不再把成功的回合报成失败。`codex app-server daemon start` 也解析并保存 `--enable`/`--disable`/`-c features.*` 覆盖（提交 d15bf1deb，`codex-rs/app-server-daemon/src/lib.rs:76-79`、`:428-432`），已运行的守护进程不受影响。
 
@@ -630,11 +636,11 @@ rollout trace（推理留档，回放模型请求的完整轨迹）的存储格�
 
 已接受的工具输出与本地重置也进 rollout trace（提交 c826ca128），分页的 `read_thread` 对条目加载设了上限（提交 50c227a6e），独立的 app-server 线程恢复可以重叠进行（提交 9537934ed），用量核算支持回合级的耗尽（提交 44834c58f）。
 
-三 处随后补上。回合与响应的检查点走 rollout budget 的统一准入（提交 8e1fc8e05）：rollout 工作准入挪进 `RolloutWorkGate`，压缩与检查点同一条政策路由——留档不能再绕过额度。配置层的条目跨快照共享（提交 bc63849ff）：克隆 `ConfigLayerStack` 此前把每层的 TOML 数据原样复制一份，各层数据不可变，共享即可。TUI 分析用的线程列表优先查状态库（提交 3e5f072ca）：列根线程此前可能触发文件系统扫描，状态库里有现成的行。本地实时帧历史以分页存储为前提（提交 29cb67623）：legacy rollout 迁移会重写已回滚的历史，非分页存储下不启用帧历史——历史被迁移改写的当下，帧记录必须待在能分页读取的库里。
+三处随后补上。回合与响应的检查点走 rollout budget 的统一准入（提交 8e1fc8e05）：rollout 工作准入挪进 `RolloutWorkGate`，压缩与检查点同一条政策路由——留档不能再绕过额度。配置层的条目跨快照共享（提交 bc63849ff）：克隆 `ConfigLayerStack` 此前把每层的 TOML 数据原样复制一份，各层数据不可变，共享即可。TUI 分析用的线程列表优先查状态库（提交 3e5f072ca）：列根线程此前可能触发文件系统扫描，状态库里有现成的行。本地实时帧历史以分页存储为前提（提交 29cb67623）：legacy rollout 迁移会重写已回滚的历史，非分页存储下不启用帧历史——历史被迁移改写的当下，帧记录必须待在能分页读取的库里。
 
-三 处随后补上。钩子扣费的溢出在发布前拒绝（提交 65d69f25b）：溢出的钩子总额此前可能把一 处残缺的扣费发给宿主，native 计费侧的溢出还会让余额变成无限大。trace 的体积治理多了一招（提交 508a42966）：重复的工具输出（比如几张结果里反复出现的同一张图）在 rollout trace 里去重保留，输出字节不可得时，周边结果仍带终端元数据与会话链接。累计的 MCP 归档字段移除（提交 30c69e60a）：不再收集、不随 Responses 请求元数据发送、也不写进 rollout 检查点，新 rollout 的搜索提供方历史改由 `model_search_state` 记录。
+三处随后补上。钩子扣费的溢出在发布前拒绝（提交 65d69f25b）：溢出的钩子总额此前可能把一处残缺的扣费发给宿主，native 计费侧的溢出还会让余额变成无限大。trace 的体积治理多了一招（提交 508a42966）：重复的工具输出（比如几张结果里反复出现的同一张图）在 rollout trace 里去重保留，输出字节不可得时，周边结果仍带终端元数据与会话链接。累计的 MCP 归档字段移除（提交 30c69e60a）：不再收集、不随 Responses 请求元数据发送、也不写进 rollout 检查点，新 rollout 的搜索提供方历史改由 `model_search_state` 记录。
 
-**标识符的分配收进了各自的 crate。** 三 处按层次推进。`thread-context-ids` crate 把 response item ID、保留上下文修订号、压缩窗口 ID 的分配集中到 `ThreadContextIds`；初始窗口选择移入 `InitialHistory`，恢复的线程复用 rollout 里的窗口 ID，rollout 重建有自己的分配器（`codex-rs/thread-context-ids/src/lib.rs:1-53`，提交 583ec348c）。"每次请求重建"的 prompt 条目 ID 变成内容派生：以线程 ID 为 namespace 的 UUIDv5，再按内容哈希生成，同内容重建得到同一 ID；历史替换与向空历史发布初始上下文时调用 `assign_prefix_ids`，普通响应条目仍走顺序分配（`codex-rs/thread-context-ids/src/lib.rs:44-69` 的 `request_ids`、`id_by_content`，提交 30607648d）。`codex-tool-call-id` crate 把 `ToolCallId` 做成透明字符串 newtype，统一派发调用、模型可见的 Responses 调用、Code Mode 单元格运行时调用三种不同角色的 ID，core 的工具注册、路由、并行派发与 rollout 追踪全部改用该类型（`codex-rs/tool-call-id/src/lib.rs:1-53`、`codex-rs/core/src/tools/router.rs`，提交 8a1a47665）。ID 语义限定为"派发身份"之后，模型可见 ID 与运行时 ID 的换算点必须显式写出来，工具派发相关签名跨 crate 的改动面也随之变大。
+**标识符的分配收进了各自的 crate。** 三处按层次推进。`thread-context-ids` crate 把 response item ID、保留上下文修订号、压缩窗口 ID 的分配集中到 `ThreadContextIds`；初始窗口选择移入 `InitialHistory`，恢复的线程复用 rollout 里的窗口 ID，rollout 重建有自己的分配器（`codex-rs/thread-context-ids/src/lib.rs:1-53`，提交 583ec348c）。"每次请求重建"的 prompt 条目 ID 变成内容派生：以线程 ID 为 namespace 的 UUIDv5，再按内容哈希生成，同内容重建得到同一 ID；历史替换与向空历史发布初始上下文时调用 `assign_prefix_ids`，普通响应条目仍走顺序分配（`codex-rs/thread-context-ids/src/lib.rs:44-69` 的 `request_ids`、`id_by_content`，提交 30607648d）。`codex-tool-call-id` crate 把 `ToolCallId` 做成透明字符串 newtype，统一派发调用、模型可见的 Responses 调用、Code Mode 单元格运行时调用三种不同角色的 ID，core 的工具注册、路由、并行派发与 rollout 追踪全部改用该类型（`codex-rs/tool-call-id/src/lib.rs:1-53`、`codex-rs/core/src/tools/router.rs`，提交 8a1a47665）。ID 语义限定为"派发身份"之后，模型可见 ID 与运行时 ID 的换算点必须显式写出来，工具派发相关签名跨 crate 的改动面也随之变大。
 
 app-server 协议面补了几项。`thread/start` 在 `experimentalApi` 下接受 `daybreakProgramPropagationEnrolled: false`，让新根线程逐线程退出 Daybreak 传播，托管要求优先；`Thread` 上的同名字段报告真实注册状态——复用活会话保持原状态，仅从存储元数据读出的线程报 `null`，从存储恢复为新会话时报 `false`（`codex-rs/core/src/thread_manager.rs:364`、`:2689`，提交 566020b72）。图片后端返回的 `image_metadata` 透出为 app-server 图片条目的可选 `imageMetadata`，在线程持久化、恢复、旧历史回放与迁移中保留嵌套值，不进入模型工具输出；空元数据省略，非对象、超过 1 MiB 或嵌套超过 24 层的元数据丢弃但不影响图片本身（`codex-rs/codex-api/src/images.rs:5-13`、`:99-135`，提交 0bfb8467d）。
 
@@ -704,9 +710,11 @@ worker 被驱逐后由兄弟 agent 唤醒时，权限不再丢失（提交 62d65
 
 **板面通知改走邮箱**（提交 f05aa41da、bfdbf01bf、f7167ac89、4a971492e）。此前的板面通知在接收方没有活跃回合接受投递时直接跳过——空闲的 agent 永远收不到板上的动静。现在通知以 `Op::InterAgentCommunication` 提交且 `trigger_turn` 关闭（`codex-rs/protocol/src/protocol.rs:992`），走普通 agent 消息的邮箱调度：空闲的接收方在稍后的回合收到，已定稿的回答不被重新打开；提交的投递持驻留守卫，与 agent 驱逐协调，排队的消息在驱逐后保留。配套两笔搬家：宿主集成（`app-server/src/agent_message_board.rs`）与清理回调从 codex-core 移进 codex-app-server，线程侧的板面访问 API 同时开放。
 
-**多智能体的角色指令收成一种呈现。** 三 处配套（提交 2b5111917、663358f98、941e1dcad）。bundled、catalog、配置来源的根代理与 subagent 指引统一渲染为 `multi_agent.role_instructions` developer 消息，包在 `<multi_agent_role>` 标签内；已经带标签的配置文本不重复套标签，fork 历史过滤对旧的无标签指引改用正文匹配（`codex-rs/prompts/src/multi_agent_instructions.rs:21-80`）。`multi_agent_v2.disable_native_tools` 打开时不再整体丢弃默认角色指引，只输出并发槽位提示（`concurrency_only`）——宿主负责回合准入时这个上限仍然有效，显式角色覆盖优先，空角色文本仍然抑制提示（`codex-rs/core/src/session/multi_agents.rs:55-62`）。内置 Default 模式指令推迟到线程真正用过 Plan 模式之后：进入 Plan 时发 Plan 指令，切回 Default 时才发 Default 指令；从未用过 Plan 的线程里，只有调用方提供且会胜过 catalog 的指令才保留（`codex-rs/core/src/context/world_state/collaboration_mode.rs:26-75`、`codex-rs/core/src/session/turn_context.rs:938-970`）。代价是提示前缀随模式切换而变化，恢复路径必须能从历史推断"是否用过 Plan"，否则会丢掉模式。
+**多智能体的角色指令收成一种呈现。** 三处配套（提交 2b5111917、663358f98、941e1dcad）。bundled、catalog、配置来源的根代理与 subagent 指引统一渲染为 `multi_agent.role_instructions` developer 消息，包在 `<multi_agent_role>` 标签内；已经带标签的配置文本不重复套标签，fork 历史过滤对旧的无标签指引改用正文匹配（`codex-rs/prompts/src/multi_agent_instructions.rs:21-80`）。`multi_agent_v2.disable_native_tools` 打开时不再整体丢弃默认角色指引，只输出并发槽位提示（`concurrency_only`）——宿主负责回合准入时这个上限仍然有效，显式角色覆盖优先，空角色文本仍然抑制提示（`codex-rs/core/src/session/multi_agents.rs:55-62`）。内置 Default 模式指令推迟到线程真正用过 Plan 模式之后：进入 Plan 时发 Plan 指令，切回 Default 时才发 Default 指令；从未用过 Plan 的线程里，只有调用方提供且会胜过 catalog 的指令才保留（`codex-rs/core/src/context/world_state/collaboration_mode.rs:26-75`、`codex-rs/core/src/session/turn_context.rs:938-970`）。代价是提示前缀随模式切换而变化，恢复路径必须能从历史推断"是否用过 Plan"，否则会丢掉模式。
 
 **消息可以投进原生 agent 的邮箱，而不启动一次推理。** `thread/inject_items` 写入磁盘的纯文本 agent message 在没有指定保留策略时交给 multi-agent v2 root 的邮箱调度器走常规唤醒与回合准入（提交 ca891cecd）：`record_prepared_items` 返回写入的最大历史序号，`SessionState::pending_recorded_mail_sequence` 记住它，`maybe_start_turn_for_pending_work` 用 `sampled_through` 判断这批是否已被别的回合采样，采过就跳过唤醒；邮件从历史直接投递、不再入队，避免重复。子 agent 线程不做这个唤醒（`codex-rs/core/src/session/inject.rs:67`、`codex-rs/core/src/state/session.rs:91`）。消息板 MCP 服务器因此可以只通知被指名的 agent（提交 c983e8d17）：`codex-message-board-mcp` 增加可选 `--app-server ws://127.0.0.1:PORT`，经 `thread/inject_items` 把通知排进邮箱且不启动回合；地址限定回环、无凭据，单次请求 10 秒超时，连接失败下次通知重连，失败的通知不重放、帖子本身照常留存，通知内容受 1024 字节额度约束（`codex-rs/message-board-mcp/src/app_server.rs:43`）。直接用 `turn/start` 会把通知变成一次主动推理，代价过大；注入邮箱让接收方的调度器自行决定何时唤醒。
+
+内存板的通知随后也走 app-server（提交 75df5098a）：SQLite 板能把原生 agent 邮件经 app-server 排队投递，内存板此前靠宿主的回调直接投——两条后端从此一条路。板连上 app-server 后不再自动订阅新线程（提交 a0d5b0a66）：自动订阅会让空闲子线程在最后一个其他订阅者离开后仍然驻留内存；现在空闲的子线程可以卸载，板的投递不依赖订阅。
 
 ### 临时分叉
 
@@ -764,7 +772,7 @@ MCP 提供方的资源读取从只读一次改为持续轮询：每次成功读�
 
 侧边栏的标签条也学会了键盘与滚轮（提交 8044c6867）：可配置的全局动作 `sidebar_up`/`sidebar_down`（`codex-rs/config/src/tui_keymap.rs:151-153`），leader 默认绑 Shift-Tab/Tab、方向键与 k/j，循环切换带回绕（`codex-rs/tui/src/keymap/chords/leader_defaults.rs:52-57`）；标签溢出时两侧出现可点击的箭头，滚轮在标签条上同样切换，切换保留窗格缩放。skill 提及补全后的尾随空格也学会了吸附（提交 1455fda73）：下一个键入字符是收尾标点时替换空格而非追加，得到 `$rustdoc,` 而非 `$rustdoc ,`。
 
-六 处体验随后补上（提交 05cf8eeb1、4f9e7171a、83f02f706、0598a96e9、8fcba7fae、b6d93b4cb）。限流的模型切换提示在账户用量恢复（所有窗口低于 90%，`codex-rs/tui/src/chatwidget/rate_limits.rs:16`）后自动清除，已可见时替换为 5 秒倒计时的恢复提示（`:217-235`、`:340`），过期账户读取忽略。后台终端不再阻塞程序状态：回合完成后状态可以变 Done（`codex-rs/tui/src/chatwidget/status_surfaces.rs:325` 附近移除了后台终端存在时的阻断判定）。
+六处体验随后补上（提交 05cf8eeb1、4f9e7171a、83f02f706、0598a96e9、8fcba7fae、b6d93b4cb）。限流的模型切换提示在账户用量恢复（所有窗口低于 90%，`codex-rs/tui/src/chatwidget/rate_limits.rs:16`）后自动清除，已可见时替换为 5 秒倒计时的恢复提示（`:217-235`、`:340`），过期账户读取忽略。后台终端不再阻塞程序状态：回合完成后状态可以变 Done（`codex-rs/tui/src/chatwidget/status_surfaces.rs:325` 附近移除了后台终端存在时的阻断判定）。
 
 全屏 Markdown 转录里含 URL 的非代码行按 `UrlAware` 策略换行（`codex-rs/tui/src/markdown_render.rs:2402`），放得下的 URL 保持单行。macOS 粘贴优先读取原生 pasteboard 的 PNG/JPEG 表示（`codex-rs/tui/src/clipboard_paste/macos.rs:16-27`，此前总向剪贴板所有者索要大 TIFF），图片文件与缩略图按 EXIF 方向解码（`codex-rs/tui/src/image_decode.rs:21-24`）。侧聊选择器显示最近用户提示预览（只对可见条目拉取）、失败内联重试、保留选中项防异步误开（`codex-rs/tui/src/sidebar_chooser.rs:27-187`、`codex-rs/tui/src/app/sidebar.rs:86-336`）。
 
@@ -784,7 +792,9 @@ TUI 这一轮补了几处交互。转录里的 Markdown 块可以选中并复制
 
 流式渲染的交接补了几处。流式 Markdown 表格从实时响应搬进滚动区时可能闪一下不见，交接期间的窗口缩放还会让排队的行进到旧宽度上；现在整理未完成期间保留最后一帧、键盘输入照收，历史在缩放后整段清屏重放（提交 3cae922e1）。警告或粘贴错误插进流式答案中间时，只整理最后一段会让部分答案在转录里重复；现在按当前流的片段数把答案合并成一个 Markdown 单元，并保住通知在其后的顺序（提交 b361a3323）。复制模式保留围栏代码的源文本（提交 618d501ea），选择光标始终可见（提交 f12fa0fbc），插入历史时按宽字符换行计数（提交 b46c087c7）。带编号选项的问题此前会在用户打字或搜索选择器时抢焦点，想写 `Phase 2` 的数字被当成答案提交；现在这类问题等输入静置一秒、待决键序列结束再出现（提交 0bbbda925）。
 
-启动卡死修了一处（提交 1476a08f1）：共享标准输入的启动器会清掉检测描述符上的非阻塞标志，读到半截回复后检查就卡在截止时间之外；现在每次读之前先零超时检查可读性。alternate screen 下的 tmux 鼠标设置变化、终端前景色缺失时的背景色、shell 模式下的补全弹窗、提示回退与 fork 后丢弃的 typeahead，也都各有一 处（提交 988e85bd5、b087609f8、17cb2e3a7、9f2cbb9c0）。
+启动卡死修了一处（提交 1476a08f1）：共享标准输入的启动器会清掉检测描述符上的非阻塞标志，读到半截回复后检查就卡在截止时间之外；现在每次读之前先零超时检查可读性。alternate screen 下的 tmux 鼠标设置变化、终端前景色缺失时的背景色、shell 模式下的补全弹窗、提示回退与 fork 后丢弃的 typeahead，也都各有一处（提交 988e85bd5、b087609f8、17cb2e3a7、9f2cbb9c0）。
+
+自定义状态行再添三种能力（提交 110f06520、15843299b、38e42cdb2）：空白保留、行内代码样式与纵向布局。Stop 钩子让回合继续时，"Working"指示一度消失，现在恢复（提交 32f77f824）——回合其实还在跑，界面不能装作结束。TUI 断线重连失败后可以用 Ctrl+R 手动重试（提交 8e757686c）。需要用户去网页完成登录的场景，确认框里直接给出 URL 操作指引（提交 2ee23c7f8）。恢复 TUI 前先等前台终端所有权（提交 9ba0ceac1），Ghostty 通过 SSH 使用时 `COLORTERM` 缺失也能识别真彩色（提交 7f8dcb3e6）。模型选择器用当前线程的提供方（提交 9038698ff），composer 回合上报工作区类型（提交 baf9b39b1）。
 
 ## 扩展机制
 
@@ -808,7 +818,7 @@ Agent Plugins（agent 插件，Codex 的插件市场形态，一个插件清单�
 
 UI 插件的脚本运行时按同一思路收紧了边界（提交 2d1984b9）：`codex-code-mode-host` 新增 `--codex-ui-plugin-process`，用一个带类型的协议初始化、调用与关闭 UI 插件的 isolate（V8 引擎里一个相互隔离的执行实例）；一个 helper 进程最多承载 32 个 isolate，模块状态可以持久，同步或 Promise 形式的导出都能返回字符串结果。硬性约束是沙箱开启且 JIT 禁用、限制可执行内容的加载与全局对象；执行有截止期限，每个实例的调用队列、源码、结果与 Promise 数量各有上限；脚本失败、取消或过载就关闭受影响的 isolate，诊断信息也限定大小。helper 的握手协议升到 v3、单帧上限提到 1 MiB。宿主进程的防线（帧上限、就绪握手）挡在进程边界，V8 的防线（额度、截止、禁 JIT）挡在脚本边界——插件再失控也只影响自己的那一格。
 
-加载的并发与缓存各有一 处。插件的文件系统与技能加载中相互独立的部分现在重叠执行，并发上限八个，结果按配置名顺序处理以保留重复 MCP 服务器的优先级与启动钩子警告的顺序（提交 7f60546e）。仓库技能的发现此前即使没有任何 `.agents/skills` 目录也会反复发远程元数据请求；现在已验证的空结果可复用，并用文件系统监视盯着变化——Linux 执行器新增 `fs_watch_missing` 能力、`fs/watchMissing` 请求与 `fs/missingChanged` 通知，监视在后台注册、执行器确认覆盖后才复用空结果，复用键由文件系统、工作目录与项目根标记组成（提交 28cade4f）。
+加载的并发与缓存各有一处。插件的文件系统与技能加载中相互独立的部分现在重叠执行，并发上限八个，结果按配置名顺序处理以保留重复 MCP 服务器的优先级与启动钩子警告的顺序（提交 7f60546e）。仓库技能的发现此前即使没有任何 `.agents/skills` 目录也会反复发远程元数据请求；现在已验证的空结果可复用，并用文件系统监视盯着变化——Linux 执行器新增 `fs_watch_missing` 能力、`fs/watchMissing` 请求与 `fs/missingChanged` 通知，监视在后台注册、执行器确认覆盖后才复用空结果，复用键由文件系统、工作目录与项目根标记组成（提交 28cade4f）。
 
 **功能开关有完整的生命周期。** `features` crate 维护一张集中式注册表：每个新功能都在这里登记，标注生命周期阶段（`Stage`）。开关从登记到退出，走的是一条单向的轨道：
 
@@ -838,6 +848,8 @@ macOS 的发布包要经过代码签名（code signing，用开发者的数字�
 
 **Statsig 与遥测共用已有的网络层。** 新增 crate `codex-statsig` 把调用方的 `RouteAwareClientPool` 适配成 Statsig SDK 的 `HttpClient`：强制 `Accept-Encoding: identity`、拒绝非 identity 的响应编码，施加 SDK 传下来的超时与响应体上限，HTTP 状态处理与重试留给 SDK（`codex-rs/statsig/src/lib.rs:21`，提交 598083ae5）；`backend-client` 新增 `statsig_bootstrap`，按 API 风格选 `/api/codex/statsig/bootstrap` 或 `/wham/statsig/bootstrap`、复用现有鉴权与账号头（`codex-rs/backend-client/src/client/statsig.rs:35`，提交 c7ef44842）。复用已有网络策略，避免引入第二套代理、TLS 与网络授权配置。遥测的导出面按二进制裁剪：code-mode host 只导出 trace、Windows 沙箱只导出指标，两处改用 `BlockingHttpService` 与 SDK 默认 HTTP 客户端，让链接器裁掉未使用的导出器与自定义客户端代码（`codex-rs/otel/src/provider/exporters.rs:43`，提交 69477b3a7）。`codex.goal.created` 指标增加 `reasoning_effort` 属性（提交 a1604a8c0）：工具调用创建的 goal 读调用步骤的元数据，回合之外创建的读线程配置或模型默认值，自定义值记为 `custom`、不可得记为 `unknown`。
 
+**远端插件档案在下解之前先验签名。** 新 crate `plugin-archive-verification`（提交 9bcb9614d 起脚手架、05d375287 成形）给 Plugin Service 下发的插件档案补上供应链校验：目录响应随下载 URL 附带签名元数据（SHA256 摘要、签名、密钥 ID、算法，`codex-rs/plugin-archive-verification/src/archive_verification.rs:31` 的 `RemotePluginArchiveDownload`——签名元数据在目录持久化时刻意省略），算法固定 `RSA_PKCS1_SHA256`（`:23`），先验签名再解包（提交 e173e7b9b，`codex-rs/core-plugins/src/remote_bundle.rs`）。验签密钥从 Plugin Service 拉取并按"端点加凭据"的作用域缓存（提交 9340f3c23，`codex-rs/plugin-archive-verification/src/archive_signing_keys.rs:22-24`：市场与评估两类用途分开、缓存作用域上限 8 个、单作用域密钥上限 64 个），并发请求合并为一次拉取（提交 188940258）。评估用的插件档案用单独作用域的密钥验证（提交 dc9e1478f）。插件停用声明也理顺了（提交 d4af2452f）：显式停用某插件不再被全局默认值覆盖。托管配置侧两笔：加载受管政策时复用配置服务器的发现结果（提交 83077214a）；网关注册纳入本地的受管要求（提交 8bb8ed6ba）。
+
 ## 可观测性
 
 三个层面。日志与追踪用 `tracing`（Rust 的结构化日志库），要求用 `#[tracing::instrument]` 标注在函数定义上（而不是在调用点手工包），异步任务的追踪信息才不会断链。指标走 OpenTelemetry（一套通用的遥测标准，简称 otel）：回合耗时、首字延迟、压缩次数、工具调用统计都有对应指标。业务层面，很多地方刻意记录"原因"而不只是"结果"：比如界面向后端发送一整段输入时，会记下发送的触发原因（回车、粘贴长文本、快捷键）和续传模式。出了"消息重复发送"之类的诡异行为，工程师能翻出记录，定位到具体是哪条触发路径。调试难，往往不是缺"发生了什么"的日志，而是缺"为什么发生"——记录动作时顺手把触发原因一起存下来，是最便宜的调试投资。
@@ -846,7 +858,7 @@ macOS 的发布包要经过代码签名（code signing，用开发者的数字�
 
 有了这个数，"模型是算得慢还是取得慢"就能分开看。回合耗时的归因还能更细：`codex-utils-critical-path` crate（`utils/critical-path/src/lib.rs`，提交 af91f6ef、08290014）跟踪共享的依赖路径，把时间归到推理、自动评审、等用户、工具、开销、未知六类（`WorkKind`，`lib.rs:14-26`）；并行汇合时保留结束得晚的那条分支及其完整历史，重叠的工作不重复计；归因裁剪到请求的区间内，没记录的空隙算开销；历史深度有硬上限（`MAX_PATH_DEPTH = 16_384`），到顶就折叠成未知工作。直接工具调用也接上了这套计时记录。
 
-回合慢，到底是模型慢、评审慢、还是人没点批准，这个账能分开算。这条线随后继续细分（提交 d5830f6fc）：回合关键路径的推理计时拆成采样与压缩两份（`critical_path_sampling_ms`、`critical_path_compaction_ms`，原 `critical_path_inference_ms` 保留为两者之和的兼容总数），捕获扩展到 subagent 与 Guardian 回合（内存整理会话仍排除）；进来的 agent 消息保持捕获，直接的 `spawn_agent` 与 `wait_agent` 调用归因到父回合的工具时间，子工作留在子回合自己的账上——父子混在一起，就没法回答"慢在谁身上"。配套四 处：WebSocket 连接指标带重认证标签（提交 dec38fc9b）；daemon 自动启动失败在遥测里按原因分类（提交 dbaead010）；完成通知暴露助手内容的 token 数（提交 16ddd538b）；模型报告 `budget_reached` 时映射为终态错误 `SessionBudgetExceeded`、立即结束 SSE 流并忽略重试头（提交 0ed9d6fa4）——budget 用尽是一次性的终点，重试只会撞同一堵墙。
+回合慢，到底是模型慢、评审慢、还是人没点批准，这个账能分开算。这条线随后继续细分（提交 d5830f6fc）：回合关键路径的推理计时拆成采样与压缩两份（`critical_path_sampling_ms`、`critical_path_compaction_ms`，原 `critical_path_inference_ms` 保留为两者之和的兼容总数），捕获扩展到 subagent 与 Guardian 回合（内存整理会话仍排除）；进来的 agent 消息保持捕获，直接的 `spawn_agent` 与 `wait_agent` 调用归因到父回合的工具时间，子工作留在子回合自己的账上——父子混在一起，就没法回答"慢在谁身上"。配套四处：WebSocket 连接指标带重认证标签（提交 dec38fc9b）；daemon 自动启动失败在遥测里按原因分类（提交 dbaead010）；完成通知暴露助手内容的 token 数（提交 16ddd538b）；模型报告 `budget_reached` 时映射为终态错误 `SessionBudgetExceeded`、立即结束 SSE 流并忽略重试头（提交 0ed9d6fa4）——budget 用尽是一次性的终点，重试只会撞同一堵墙。
 
 轨迹的用途是事后对照排查，排查时每个环节都得答得上来。"这段耗时算谁的"靠归因维度：trace 记录带上回合、工具与技能三个维度（提交 b82d542a）；回合启动与响应流式传输有专门的埋点，起点与首字不再靠推断（提交 810501d6）；tracing 上下文贯穿工具派发全程，不因异步边界断链（提交 bca6f238）。"当时的历史是什么"靠 rollout 记录被接受的对话历史（提交 5b792948），同一张图片的内容在不同请求快照之间一致，对照轨迹时不会因图片表述差异对不上（提交 e5ea2ed5）。"模型真正收到了什么"靠完整的结果留存：MCP 工具的结果在轨迹里保留完整原样（提交 f2df3e3b）——此前 MCP 完成事件可能截断大结果、丢掉为喂给模型而移除的内容，现在回调、内容过滤与界面截断发生之前就把运行时结果记进轨迹，被拦在模型后端之前、根本没发出的调用也记为一条失败结果（带拒绝原因），轨迹里能看到超长的 MCP 文本、音频、结构化内容与元数据，界面上看到的照旧截断。排查问题时，轨迹里是模型真正收到的完整输入。
 
@@ -856,7 +868,7 @@ macOS 的发布包要经过代码签名（code signing，用开发者的数字�
 
 遥测的配置也进了受管约束。`requirements.toml`（见"扩展机制"里的配置系统）可以管理 OpenTelemetry 的日志开关、工具结果字节上限、环境，以及日志、追踪、指标三种导出器（协议类型见提交 424916ee；语义见 727283ce）：受管值优先于用户配置、导出器整体替换、冲突时给出警告，未受管的 `span_attributes` 与 `tracestate` 保留，这两项后来也能由 requirements 按属性或成员字段合并指定（提交 154e8736）；`configRequirements/read` 暴露受管的 otel 设置，`config/read` 里应用它们但不标普通字段来源，与受管字段重叠的配置写入被拒绝。导出器的请求头可能含凭据，app-server 的配置响应在生效配置、来源层、受管约束与写覆盖元数据里一律把头的值替换为 `[redacted]`、保留头名，运行时导出器仍拿原值（提交 bea47c06）。追踪的开关也能在运行中切：app-server 以关闭追踪启动时，订阅器此前缺少导出 span 所需的桥接层，换账号启用追踪后导不出去；现在可重载的追踪层总是安装，账号切换即可启用导出，关闭时全局 tracer provider 换成空操作实现（提交 0736b264）。
 
-五 处遥测随后补上。`mcp.tools.call` span 记录 `codex.mcp.call.outcome`，失败时用与指标相同的分类打 OpenTelemetry 错误状态；调用 future 在完成前被丢弃（含首次 poll 之前）记为 `interrupted`；可获取时只记录数字 JSON-RPC 错误码 `rpc.jsonrpc.error_code`，不带服务端错误消息与数据（`codex-rs/core/src/mcp_tool_call.rs:526-560`、`:853-885`，提交 1c0c80602）。subagent 消息与发起它的工具调用按 ID 关联：接收方把 spawn、任务分配或消息写入历史时记录 `source_tool_call_id`，回放时据此关联，即便接收方先于发送方工具完成就记录也不会错配；交互边在消息真正出现在模型请求之前始终指向接收方线程，历史重置时按"不同会话条目"去重、重复的提示前缀只计一次（`codex-rs/rollout-trace/src/raw_event.rs:112-118`、`codex-rs/rollout-trace/src/reducer/tool/agents.rs:282-350`，提交 076ac7856）。
+五处遥测随后补上。`mcp.tools.call` span 记录 `codex.mcp.call.outcome`，失败时用与指标相同的分类打 OpenTelemetry 错误状态；调用 future 在完成前被丢弃（含首次 poll 之前）记为 `interrupted`；可获取时只记录数字 JSON-RPC 错误码 `rpc.jsonrpc.error_code`，不带服务端错误消息与数据（`codex-rs/core/src/mcp_tool_call.rs:526-560`、`:853-885`，提交 1c0c80602）。subagent 消息与发起它的工具调用按 ID 关联：接收方把 spawn、任务分配或消息写入历史时记录 `source_tool_call_id`，回放时据此关联，即便接收方先于发送方工具完成就记录也不会错配；交互边在消息真正出现在模型请求之前始终指向接收方线程，历史重置时按"不同会话条目"去重、重复的提示前缀只计一次（`codex-rs/rollout-trace/src/raw_event.rs:112-118`、`codex-rs/rollout-trace/src/reducer/tool/agents.rs:282-350`，提交 076ac7856）。
 
 回合成本遥测改为"换算美元 + 原生美元"求和：旧后端省略原生字段时按 0 处理，显式 null 视为不可用，任一为负或求和无符号溢出时整体抑制，避免少报成本（`codex-rs/backend-client/src/client/chatgpt_turn_cost.rs:15-45`，提交 51f4b8af0）。OpenTelemetry 供应商按二进制裁剪：`try_new_http_traces` 只组装 trace 需要的 exporter，`try_new_http_metrics` 只组装 metric 需要的 exporter 并允许 Statsig，两者都拒绝不支持的信号与 gRPC 配置，未使用的构建器在编译期不可达（`codex-rs/otel/src/provider.rs:202-216`，提交 548dd628d）。
 
@@ -894,6 +906,8 @@ gRPC 会话的打开失败也带上了类型（提交 064b2d9bc）：新的 `Grp
 
 云端两项修补。新云会话在提供方切换触发账号刷新时，此前会去读云后端并不暴露的配置；现在直接用云后端 `account/read` 的响应并跳过配置读取——云账号属于已认证的连接，与线程的模型提供方无关（提交 a0995c2b2）。云回复流的恢复改成指数退避（提交 d4014cb19）：此前反复断连会把"进行中恢复尝试"的额度用光，而共享的截止时间又让排队与重新附着的时间吃掉取历史、装替换流的时间；现在重连退避不设次数上限，取历史与安装各有自己的时间。
 
+Code Mode 这一轮补了四件。动态工具客户端此前只能把 JSON 当文本塞进 `contentItems`，脚本要自己解析文本才能拿到字段；现在支持结构化的动态工具结果（提交 ff146c344），结果直接是可取用的字段。异步用户消息也能经 Code Mode 发送（提交 7a2402279）——此前只有顶层工具调用这条路。图片生成可以延迟暴露（提交 37aeac06b，`features.defer_image_generation`）：代码模式经 `ALL_TOOLS` 发现图片工具，初始模型请求里不带它的定义。空闲的本机 code-mode 宿主五秒后回收（提交 714bc44f0）；`exec_command` 首批输出的收集耗时有了计量（提交 44308610e）。
+
 ### 语音与云端
 
 仓库里还有两条支线。实时语音会话（协议里的 `RealtimeConversationStart/Audio/Text` 等操作，配 `realtime-webrtc`、`voice-host` 等 crate）：用 WebRTC（浏览器和原生应用常用的实时音视频通信协议）建语音通道，说话就能指挥 Codex。一个容易被忽略但很实际的细节：语音用的 WebSocket 连接**遵守配置里设置的代理（proxy）策略**——如果用户为 HTTP 请求配了代理，语音通道的连接也走同一个代理，还能带上自定义的证书信任配置，保证"出口流量怎么走、信任什么证书"全系统一致，不在语音这条侧路上留例外。
@@ -904,7 +918,7 @@ gRPC 会话的打开失败也带上了类型（提交 064b2d9bc）：新的 `Grp
 
 预热机制也认得了本地项目（提交 7de8a0afc）：按本地项目的 GitHub 来源预备默认云环境（`codex-rs/cloud-client/src/prewarm.rs:9-12` 的 `ProjectEnvironment`），来源 URL 必须免凭据、客户端不检查本地 Git 状态（`:31` 的 `prewarm_default_thread`）——云端环境预先对准你正在做的仓库。交给云端的消息也升级了（提交 e6bf88ae0）：提交与用户消息摘要支持有序的文本加图片组合（`codex-rs/cloud-client/src/turns.rs:13` 的编码上限，图片请求最大约 3.75 MiB、给 4 MiB 边界留了余量；`:35` 的 `UserMessageInput`、`:54` 的 `ImageReference` 只认内联 data URL 与已上传文件 ID、`:122` 的 `add_user_message` 做本地校验）；切换到云端时输入框保持可编辑并持续重绘，最新草稿、附件与 Vim 模式带入目标会话，失败保留草稿、交接期间禁止向旧会话提交（`codex-rs/tui/src/app/cloud_switch_wait.rs` 的交接状态机）——换目的地不再丢正在写的话。
 
-云端线随后七 处（提交 9f04d886f、e1cc96712、e787af962、25f4940d4、6107b9886、ffdf2dadd、b9796386e）。realtime 会话的 attach 支持 `RealtimeAttachmentOptions`（`codex-rs/protocol/src/protocol.rs:229`）：挂起的握手可被取消或按 `start_before` 截止超时（`codex-rs/core/src/realtime_conversation.rs:556-569`），取消在确认前完成清理，已发布的连接不受迟到的取消影响。TUI 的问题回答改走 Cloud 消息准入（提交 e1cc96712，`codex-rs/tui/src/app/user_turn_submission.rs:20-46`）：回合运行中走 start-or-steer、空闲走 start-if-idle——云端消息的准入路径覆盖了问答。
+云端线随后七处（提交 9f04d886f、e1cc96712、e787af962、25f4940d4、6107b9886、ffdf2dadd、b9796386e）。realtime 会话的 attach 支持 `RealtimeAttachmentOptions`（`codex-rs/protocol/src/protocol.rs:229`）：挂起的握手可被取消或按 `start_before` 截止超时（`codex-rs/core/src/realtime_conversation.rs:556-569`），取消在确认前完成清理，已发布的连接不受迟到的取消影响。TUI 的问题回答改走 Cloud 消息准入（提交 e1cc96712，`codex-rs/tui/src/app/user_turn_submission.rs:20-46`）：回合运行中走 start-or-steer、空闲走 start-if-idle——云端消息的准入路径覆盖了问答。
 
 云端线程 prewarm 带 `plugins_mcp.product_sku = "codex"` 与按需的 `deferred_environment`（`codex-rs/cloud-client/src/prewarm.rs:47`、`:76`），推迟 executor 就绪。恢复云端线程时按回合与条目 ID 追踪已从历史渲染的完成 assistant 条目、忽略后续重复的 start/delta/completion（提交 e787af962，`codex-rs/tui/src/chatwidget/transcript.rs:52` 的追踪，取用点 `codex-rs/tui/src/chatwidget/protocol.rs:139`、`:611`）——文本不再重复渲染。
 
@@ -992,3 +1006,4 @@ gRPC 会话的打开失败也带上了类型（提交 064b2d9bc）：新的 `Grp
 - 2026-11-22 基于 commit 9302bb553e 补充：推理摘要默认、空 permissions 消息从初始上下文跳过并保留检查点、indexed 搜索默认开关、MCP over HTTP 无会话 initialize 重…、轨迹里区分转录节点 ID 、functions.exec 目录在全局 helper 签名…、TUI 七处（18 条提交）。
 - 2026-11-23 基于 commit 3cae922e10 补充：终端侧栏 open_in_codex 工具、运行时认证的 Responses WebSocket 可复用、MCP 回复 POST 不再解决待决请求、subagent 独立的异步用户消息开关、云会话账号读取、TUI 流式交接三处、命令中心任务加载进度、恢复选择器加载指示等（28 条提交）。
 - 2026-11-24 基于 commit a4ee1058d9 补充：文件元数据批量查询 fs/getMetadataBatch 、请求头协商裁剪 usage.attribution 、远程压缩 v2 带 final-answer schema 、Guardian V3 证据链六处、/diff 携带命名权限档位、NFS rollback journal 下线程历史改为读取…、多智能体邮箱投递、TUI 断线离线五处等（74 条提交）。
+- 2026-11-25 基于 commit b0b0852ee 补充：插件档案签名验证新 crate、Guardian 评审输入七笔、沙箱端口授权与 CA 绑定与重试决策、MCP 启动计时与按请求认证与加密上下文与 Unix 套接字、Code Mode 四笔、内存板走 app-server 与空闲子线程卸载、附加上下文基线入 world state、流式两笔、目录握手刷新、exec 审批不再被强设（96 条提交）。

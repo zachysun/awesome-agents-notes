@@ -4,11 +4,11 @@
 |---|---|
 | 协议 | MIT |
 | 主语言 | TypeScript |
-| 笔记基准 | commit `7135638709`（2026-11-24） |
+| 笔记基准 | commit `c11a73bf`（2026-11-25） |
 
 Pi 是 earendil-works 开源的 AI agent 工具包，TypeScript 写的，monorepo（一个仓库里放多个软件包）组织在 `packages/` 下，现在 12 个包，GitHub 上 star 数很高（旧笔记记录为 10.8 万）。它最出名的产品是 `pi` 这个终端编码 agent——在命令行里对话、读写代码的 AI 助手，同类有 codex、opencode、Claude Code。但它的定位不止于此，README 里的词是 "agent harness"（套件/外壳），意思是给你一套搭 agent 的现成骨架：从统一大模型接口、agent 运行时、终端界面库，到持久化运行时，一层一层都能单独拿出来用。
 
-这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都从"它面对什么情况"讲起，把一次调用、一次提交、一次崩溃恢复从头走到尾，让不了解这个项目的人也能顺着读完。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `7135638709`（2026-11-24）。
+这份笔记按问题组织，不按 pi 的开发时间线：每个问题讲清 pi 现在是怎么解的、为什么这么解、代价是什么。讲法上，每个特性都从"它面对什么情况"讲起，把一次调用、一次提交、一次崩溃恢复从头走到尾，让不了解这个项目的人也能顺着读完。项目演进过程放在文末修订记录里。笔记起于 commit `c7cdb46`（2026-09-21），跟进到 commit `c11a73bf`（2026-11-25）。
 
 ## 它要解决什么问题
 
@@ -49,7 +49,7 @@ pi 对这个问题给出了一条贯穿全部包的答案：**把执行过程变
 
 供应商错误的分类这一轮补齐了三处判据漏洞。Google 生成式接口与 Vertex 在没有任何候选、也没有结束原因时，保留提示词被拦截的原因与安全评分、格式化成明确错误（提交 117eac3a，`packages/ai/src/api/google-shared.ts:503`）——这类错误不再被当成可重试的空流，真正的中断则报出收到的块数。Mistral 不再在错误消息里附加"服务器错误"，可重试判定移到共享的重试模式表、适配器只报告事实（提交 4f3d2be9，`packages/ai/src/utils/retry.ts:131`）。重试表新增 "rate increased too quickly"，覆盖 Codex 的 429 与 Qwen 的同类措辞（提交 0888fd79，`retry.ts:50`）。Codex 的思考等级也固定成初始选择（提交 a588a7bc）：输入、顶层工具与等级基线合并进请求准备，从保留的回复里重建基线、只在等级真的变化时追加更新（`packages/ai/src/api/openai-responses-shared.ts:204`、`:296`）——这样既保住提示词缓存与前缀续接，也避开"先发中档再发高档更新"导致的推理缺失。
 
-协议兼容三 处：非严格 Anthropic 工具保留声明的 `$schema`，Draft 7 的元组写法不会在裁剪根关键字时丢掉方言（提交 4245b07b，`packages/ai/src/api/anthropic-messages.ts:1913` 附近）；Cloudflare Workers AI 的四个模型打开"助手内容不可为 null"，只有工具调用的助手消息发送空字符串（提交 b8be10a7）；MCP 客户端把服务器回显的十进制字符串 id 归一化成整数再匹配，进度令牌同样处理，服务器发来的请求 id 保持原样（提交 c717e647，`packages/mcp/src/protocol/jsonrpc.ts:7`）。凭据状态的判据也统一了（提交 585648aa、71356387）：存储型凭据解析失败报告为未配置，登录状态改成"已配置或缺解"的标签联合并显示"存储的密钥未能解析"；写入 `!command` 键时丢弃该命令的缓存结果，让紧随其后的可用性刷新真正重跑命令，但读取路径不会重跑命令、失败的 `!command` 也不会每次查凭据都阻塞（`packages/coding-agent/src/core/model-runtime.ts:655`–`:661`）。
+协议兼容三处：非严格 Anthropic 工具保留声明的 `$schema`，Draft 7 的元组写法不会在裁剪根关键字时丢掉方言（提交 4245b07b，`packages/ai/src/api/anthropic-messages.ts:1913` 附近）；Cloudflare Workers AI 的四个模型打开"助手内容不可为 null"，只有工具调用的助手消息发送空字符串（提交 b8be10a7）；MCP 客户端把服务器回显的十进制字符串 id 归一化成整数再匹配，进度令牌同样处理，服务器发来的请求 id 保持原样（提交 c717e647，`packages/mcp/src/protocol/jsonrpc.ts:7`）。凭据状态的判据也统一了（提交 585648aa、71356387）：存储型凭据解析失败报告为未配置，登录状态改成"已配置或缺解"的标签联合并显示"存储的密钥未能解析"；写入 `!command` 键时丢弃该命令的缓存结果，让紧随其后的可用性刷新真正重跑命令，但读取路径不会重跑命令、失败的 `!command` 也不会每次查凭据都阻塞（`packages/coding-agent/src/core/model-runtime.ts:655`–`:661`）。
 
 ## 模型接入
 
@@ -98,6 +98,12 @@ Codex 路线的上下文窗口改用 `/backend-api/codex/models` 的实际返回
 模型回退从此不再无声（提交 c8c456c8）：恢复或分叉的会话，其模型已下架或登录失效时，`createAgentSession()` 会回退到另一个模型并生成一条说明消息——此前只有交互启动显示它：`/resume` 与 `/fork` 重算了消息但无人读、pi 换了模型不打招呼；打印、JSON 与 RPC 模式根本没有传递。现在每种模式都报告这次回退。
 
 虚拟模型（实验性）把"选哪个模型"也变成了扩展点：扩展用 `pi.registerVirtualModel()` 注册一个目录条目，它自己不连任何服务商，每个请求来时才挑一个物理模型和思考档位。"计划用强模型、实现用便宜模型""上下文变大就换大窗口"这类路由策略，由此是几十行扩展代码的事。上下文限制、压缩预留、图片尺寸都按实际路由到的物理模型计算——虚拟名字背后干活的是谁，账就算在谁头上。
+
+流式读取的代价也定成线性（提交 da7e26cc）：此前的读取器把没凑齐的行或事件存进一个不断增长的字符串，每来一块就重搜整段——用 `+=` 拼出来的字符串在 V8 里一搜索就先整体拷贝，一条 16 MiB 的 SSE 数据行按 64 KiB 分块到达时要重扫约 256 次，`consumeSseStream` 阻塞事件循环 9.8 秒。现在只搜新增文本、行或事件结束时才整读一次积压串：Anthropic 的规范解析器抽成公共的 `SseDecoder`（`packages/ai/src/utils/sse.ts:14`），Anthropic、OpenAI Codex、Mistral、pi-messages 四个自带 SSE 解析的实现统一走它，各自保留中止与错误处理（`packages/ai/src/api/anthropic-messages.ts:631`、`openai-codex-responses.ts:835`）；mcp 的 `consumeSseStream` 同法改写并改用累计字节数计限，16 MiB 从 9.8 秒降到 89 毫秒；durable 与 env 的行读取器从 1.35 秒降到 72 毫秒；chord 同步、RPC JSONL、TUI 括号粘贴的结束标记（只搜新增文本加末尾 5 个字符，防标记跨块断开）、p2 终端帧同批收口。增量解析器随后补一处边界（提交 32c7f6d7）：事件名的匹配不再命中更长标识符的前缀。
+
+错误响应从此也进 onResponse（提交 8a57d42a）：SDK 适配器收到 4xx/5xx 时把错误抛出，但带状态的响应本身此前到不了调用方的 onResponse 回调——只剩一条 `"429 ..."` 文本；OpenAI Codex SSE、Mistral、pi-messages 与 Bedrock 本来就上报。现在每次带 HTTP 状态的失败尝试在重试判定之前上报状态与响应头（契约写在 `packages/ai/src/utils/provider-retry.ts:13`），中止与无状态的失败（连接错误）不上报，Google 的错误没有头、报空对象加状态码；重试后的成功尝试照常上报，Anthropic 线程与 strict 工具的回退会先报被拒的 400 再报 200。
+
+模型目录与协议参数这一轮跟了五处。Anthropic 自家模型的思考关闭档不再靠手写名单（提交 433c1fd9）：`off` 是否受支持此前写在 `claude55ThinkingLevels()` 这类按提供方手维护的函数里，而 models.dev 的 Anthropic 条目早已用"没有 thinking 开关"记录了不支持——目录生成改为查 models.dev 条目（`packages/ai/catalog/families/anthropic.ts:114` 的判定：条目没有 toggle 型选项即不支持关闭），Opus 5.5、Sonnet 5.5、Fable 5.x 的 `off` 置 null，GitHub Copilot 这类从 Anthropic 条目取值的宿主一并修正；按模型默认档位的截断顺带补齐。Gemini 4 Hydrogen 与 Neon 支持 `xhigh` 思考档（提交 001ffff3）：预算型模型没有更高的预算档，`xhigh` 就用 high 档的预算（`packages/ai/src/api/google-shared.ts:113`）。GitHub Copilot 补 gpt-6-luna-decisions 决策模型并按账号过滤分类器（提交 90ef46ff）：Copilot 的 `/models` 目录把账号可用的分类器列进 `availableClassifierModelIds`（Business 席位不含 luna-decisions），凭证刷新时保存这份清单、此后只列清单内的分类器（`packages/ai/src/providers/github-copilot.ts:53`）；旧凭证没有清单，继续列全部，下次刷新收窄。OpenRouter 两笔：上游自己的结束原因 `native_finish_reason` 记进用量、失败时附在错误消息后（提交 ddf5868d，`packages/ai/src/utils/openrouter-finish-reason.ts:1`）；分类器结果带上游的 responseId 与申报成本（提交 bff71c70，`packages/ai/src/api/system-one-shared.ts:232`）。
 
 ## 上下文管理
 
@@ -189,7 +195,7 @@ sequenceDiagram
 
 流式响应也能存：pi-ai 的消息帧编码器（`AssistantMessageFrameEncoder`）把一条流式响应压缩成可持久化的帧序列，配套一个纯函数 reducer 能从帧重建完整消息。流式过程中断后恢复，靠的就是它。流式内容写入存储的节奏也可以调（提交 6c2fd73b）：提交可以标记为延迟持久（`{ persistence: { kind: "deferred", withinMs? } }`，`packages/durable/src/types.ts:1071`）。满足条件的提交（写的是已存在的会话文档、历史取最新、分支取初始）先在内存里生效、监视方立刻看得见，写入存储的动作推迟到下一次读写该文档、文档离开内存、会话关闭，或至多 `withinMs`——默认 `settings.progress.persistWithinMs`，1000 毫秒（`packages/durable/src/harness/agent.ts:37`）。
 
-`subscribeCommits()` 的订阅方只在真正存储之后才见到这些提交，见到的就是存储的那一份；内存侧的观察者看到的仍是即时发布。这是一 处拿崩溃窗口换吞吐的交易：32 路流的 SQLite 压测里，存储事务从每秒 562 次降到 99 次，磁盘写入从 14.3 MB/s 降到 4.9 MB/s，单核 CPU 占用从 29% 降到 22%；代价是崩溃最多丢约 1 秒已流出的内容。生成阶段的部分节流与工具输出节流都用了它。
+`subscribeCommits()` 的订阅方只在真正存储之后才见到这些提交，见到的就是存储的那一份；内存侧的观察者看到的仍是即时发布。这是一处拿崩溃窗口换吞吐的交易：32 路流的 SQLite 压测里，存储事务从每秒 562 次降到 99 次，磁盘写入从 14.3 MB/s 降到 4.9 MB/s，单核 CPU 占用从 29% 降到 22%；代价是崩溃最多丢约 1 秒已流出的内容。生成阶段的部分节流与工具输出节流都用了它。
 
 ### 存在哪：一排可替换的后端
 
@@ -198,7 +204,7 @@ durable 的后端有一排，都实现同一个 `Storage` 接口（`packages/dur
 | 后端 | 适合什么场景 |
 |---|---|
 | 内存 | 什么都不持久化，测试用 |
-| SQLite | 默认的长期运行的选择：版本化迁移、基准测试，表可加前缀做命名空间化让多实例共用一个文件；WAL 模式（一种让读写并发更好的 SQLite 配置）配 `synchronous = NORMAL`，提交能承受进程崩溃，但断电或宿主机故障可能丢最新一 处 |
+| SQLite | 默认的长期运行的选择：版本化迁移、基准测试，表可加前缀做命名空间化让多实例共用一个文件；WAL 模式（一种让读写并发更好的 SQLite 配置）配 `synchronous = NORMAL`，提交能承受进程崩溃，但断电或宿主机故障可能丢最新一处 |
 | JSONL | 按行追加，适合小规模、可整目录拷贝的部署；整份历史同时留在内存里，长跑 agent 该用 SQLite |
 | IndexedDB | 浏览器专用，`IndexedDbStorage.open(name)` 把全部数据放进一个 IndexedDB 数据库，同一时刻只能有一个持有者，README 要求在它的整个生命周期内持有一把 Web Lock，而不是在多个标签页或 worker 里竞争打开，需要长期保留时调 `navigator.storage.persist()` |
 | Cloudflare Durable Object | 提交就是它的存储事务，支持边缘部署 |
@@ -277,6 +283,8 @@ pi 在这个问题上的选择是公开承认"不做"。README 原话：Pi 不�
 
 它做的唯一一道守卫是**项目信任**：启动时发现项目里有会自动执行的本地资源（`.pi/` 配置、扩展、技能），而你没有对这个目录做过决定，pi 会先问一句"信任这个项目吗"，决定存在 `~/.pi/agent/trust.json`。定位是输入加载守卫——防陌生仓库偷改配置，不是沙箱。已保存的决定优先于自动信任：项目里没有任何需要信任的资源时，此前"不信任"的决定会被跳过、`ctx.isProjectTrusted()` 照样返回 true，现在以保存的决定为准（提交 31ade0e0）。连接外部工具时的身份校验做得很细：OAuth（开放授权协议）凭证按服务器名加网址分开存（同一个网址的不同服务器可以登不同账号）、RFC 9207（一项规定授权响应必须带签发者标识的标准）的 `iss` 参数校验防授权响应冒名，连服务器元数据都没发现的情况下 `iss` 一律拒绝，不给冒名者留模糊地带。
 
+启动阶段的等待也开始按程序状态协议上报（提交 27a40ea2、642a705e）：项目信任、首次安装、扩展弹窗这类启动对话框此前只出现在界面里，外部驱动看不见 pi 在等谁；现在交互模式启动前弹的对话框以 blocked 程序状态上报（OSC 7501，`packages/coding-agent/src/cli/startup-ui.ts:134`），RPC 客户端与终端集成能看到"正被哪个问题阻塞"。上报的 kind（permission 许可 / question 文字回答 / auth 凭据）不再按对话框类型猜——select 与 input 一律报 question、confirm 报 permission 曾把两处报错：项目信任询问是 select（五个选项）却报成 question，首次安装的使用数据同意同样报错；对话框选项加了 `blockedKind` 字段（`packages/coding-agent/src/core/extensions/types.ts:125`），项目信任显式报 permission（`packages/coding-agent/src/cli/project-trust.ts:47`）。
+
 ## 扩展机制
 
 扩展机制是"核心极简"策略能成立的前提。扩展就是一个导出默认工厂函数的 TypeScript 文件（用 jiti 加载，免预编译），能做的事覆盖 agent 的各个接入口：
@@ -304,9 +312,9 @@ OAuth 登录拆成两半：`startMcpSignIn` 发起、`completeMcpSignIn` 完成�
 
 卫生项：`maxMessageBytes` 也作用于 Streamable HTTP 的 JSON 响应（提交 4a8b60bc），超限的 SSE 响应流直接取消（提交 f4098474），服务器已退出时关闭 stdio 会清理子进程（提交 42849bb8）；工具命名、schema、输出上限与配置 helper 在各接入方之间共享（提交 76c040a2）。恢复路径上有一条例外规则也修了（提交 3345c292）：会话恢复或 `/reload` 后，`tool_search` 之前加载的 MCP 工具先挂起、等服务器重连再重新声明；此前 `setActiveToolsByName()` 只要新工具集关掉了任何工具，就把全部挂起工具一并丢弃（`packages/coding-agent/src/core/agent-session.ts:1605`）——这条规则本意是让计划模式这类整体替换生效，却误伤了"扩展注册一个加载器工具、又在 `session_start` 把它隐藏"的常见形态：恢复时加载器被当作新注册工具激活，隐藏动作随即触发全丢。
 
-现在只有新集合真正关掉的工具才丢弃，挂起工具保留等重连。MCP 工具的结果随后按调用方分成了两条通道（提交 51532e40、1acc72ac）。起点是"没有输出 schema 的 MCP 工具其结果走无声明结构化输出的保底路径"，被截到 50 KB / 2000 行、保留头部、图片被丢弃，代码模式脚本因此拿不到完整结果。第一 处先按调用方分叉：代码模式脚本拿未截断的 content；模型路径走截断，截断后的完整文本写进会话执行环境的临时目录，返回文本末尾给出路径（`apps/p2/plugins/mcp/tools.ts:451` 的 `outputSaver`）——写文件选会话所在环境，因为 subagent 的执行环境可能在另一台机器上。
+现在只有新集合真正关掉的工具才丢弃，挂起工具保留等重连。MCP 工具的结果随后按调用方分成了两条通道（提交 51532e40、1acc72ac）。起点是"没有输出 schema 的 MCP 工具其结果走无声明结构化输出的保底路径"，被截到 50 KB / 2000 行、保留头部、图片被丢弃，代码模式脚本因此拿不到完整结果。第一处先按调用方分叉：代码模式脚本拿未截断的 content；模型路径走截断，截断后的完整文本写进会话执行环境的临时目录，返回文本末尾给出路径（`apps/p2/plugins/mcp/tools.ts:451` 的 `outputSaver`）——写文件选会话所在环境，因为 subagent 的执行环境可能在另一台机器上。
 
-第二 处把机制收拢：`createMcpResultSchema`（`packages/mcp/src/result-schema.ts:26`）生成"整个 `CallToolResult`"作为输出 schema，含 `content` 数组（文本、图片、音频、资源链接、资源）、`structuredContent`（工具自身有 schema 时嵌入）与 `isError`；嵌入时 `relocateSchema`（`:62`）把 `#`、`#/...` 改写到 `#/properties/structuredContent` 之下，并区分哪些关键字的值是数据（`const`、`enum`、`default`、`examples`）、哪些是名字到 schema 的映射（`properties`、`$defs`）。
+第二处把机制收拢：`createMcpResultSchema`（`packages/mcp/src/result-schema.ts:26`）生成"整个 `CallToolResult`"作为输出 schema，含 `content` 数组（文本、图片、音频、资源链接、资源）、`structuredContent`（工具自身有 schema 时嵌入）与 `isError`；嵌入时 `relocateSchema`（`:62`）把 `#`、`#/...` 改写到 `#/properties/structuredContent` 之下，并区分哪些关键字的值是数据（`const`、`enum`、`default`、`examples`）、哪些是名字到 schema 的映射（`properties`、`$defs`）。
 
 声明这个 schema 之后，Durable 按 schema 校验并放行整个结果，代码模式不再被保底路径截断，错误结果也送完整内容。模型路径改用 `toMcpModelContent`（`packages/mcp/src/model-content.ts:21`）：文本块原样，内嵌文本资源解成文本，二进制资源保存到会话环境并给出路径与大小，资源链接渲染成带 URI、标题、类型、大小、说明与读取工具名的文本。两个函数从 coding-agent 移进 `pi-mcp` 由 pi 与 p2 共用（`packages/coding-agent/src/extensions/mcp/tools.ts:92`、`:143`）。代价是 MCP 工具的输出 schema 变宽、脚本侧不再有统一的体积上限，超大结果由脚本自己承担；模型路径多一次临时文件写入，环境缺失时给出"无法保存完整输出"的提示而非静默截断。
 
@@ -405,6 +413,8 @@ durable 给一次运行的"能跑多久、怎么续、什么时候拒"各定了�
 它与 `beforeRequest` 分属两层——后者在消息层动对话内容，前者在请求体层动厂商自有格式，比如 Anthropic 的 `thinking.display` 这类 pi-ai 参数里没有的字段；请求体的形状随 `model.api` 变，钩子要先看 API 类型再动手。替换只对本次请求生效，同一次尝试内因网络错误重发时会拿新请求体再过一遍钩子链。模型调了清单之外的工具、或运行时解析不到实现时，这次调用以带 `tool_unavailable` 诊断的错误工具结果收场、运行继续，模型可以对错误作出反应（`spec.md:966-969`）。`afterRun` 能在运行答完之后以 `runEndTask` 申请持久任务（提交 7e15f960）：答案先提交、输入先结算，生成阶段才在 finish 阶段把这些任务作为子任务创建、在 drain 阶段等它们到终态——`pi.live.run` 因此在它们结束前保持忙碌，Stop 连它们一起中止，崩溃后照常恢复，排队的输入要等它们结束才投递。
 
 钩子与任务读历史有了不随压缩变化的基准：`HookApi.entry()`/`entries()` 与 `TaskRuntime.entries()` 读会话的原始提交历史（`spec.md:2151-2152`、`:3316-3317`），压缩从不改动条目序列，以条目 ID 为界的区间在压缩前后、重跑时读到同样的内容（`spec.md:3414`）。
+
+输出文件的写入失败不再击穿进程（提交 943a99e3）：pi 把没完整展示给模型的输出（截断的工具输出全文、二进制 MCP 资源、代码模式脚本展示的图片）写成系统临时目录里的文件（`packages/coding-agent/src/utils/output-files.ts:3`），流式写入的打开与写入失败（磁盘满、配额、临时目录不可写）此前是未捕获异常、直接结束进程；现在失败以流事件到达，第一个失败丢弃文件、`close()` 报告原因，输出管道照常收尾。`!` 命令未保存输出文件的回退路径也修正了（提交 8209929f），重建的输出跟随 ctrl+o 的展开视图（提交 0ab23c37）。
 
 ## 特色模块
 
@@ -550,6 +560,8 @@ p2 的提供方登录也不再随连接掉线一起消失（提交 fb248c7f）�
 
 **p2 的备份搬成了独立插件，并补上了账号隔离。** 备份从运行时目录搬进 `apps/p2/plugins/backup/`（提交 10149e47）：上传器负责单个 store 的上传，同步层从 outbox 拉取，普通提交后 5 秒、紧急提交后约 200 毫秒触发刷写；已同步到第几个序号的书签按目标分目录存放，切换目标会从整库复制开始。随后结构重整（提交 6215bf05）：打开目标（目录或具名插件目标，具名目标最多等 30 秒等它的插件对象激活）、上传通道、契约分开，契约的起始调用改成带种类的标签联合，新增"服务器侧备份未就绪"错误码。同步层的写入者世代整个删除（提交 a4c09763）：p2 只把同步层用于备份、单个会话只有一个写入者，别的机器恢复出来的副本会分叉成新会话（理由写在 `packages/chord/docs/decisions.md`）。备份按账号隔离（提交 8433532f）：打开目标时返回当前凭据对应的账号，第一次上传时把账号写进书签目录，之后换账号登录只会得到"别的账号"状态，提交留在 outbox 等原账号回来。远端副本被删后可以重新全量上传（提交 b81e9ed6）：同步层识别"远端为空"这一独立结果，上传器删掉本地书签后重试一次；其余的历史不匹配一律视为损坏，停止上传直到进程重启，避免无限重试。
 
+关闭与换账号从此也有状态可报（提交 d4760131）：备份契约新增 `paused` 状态，两种情形此前静默——备份关闭但该 store 之前备份过（报 `paused`、原因 `off`，带已同步的序号，`apps/p2/plugins/backup/uploader.ts:40` 的 `pausedWhileOff`），这台机器换了别人的账号登录（报 `paused`、原因 `other_account`，该 store 的提交留在 outbox 等原账号回来，`uploader.ts:179`）；worker 把它作为状态上报（`apps/p2/plugins/backup/worker.ts:29`），界面与远端都能看出"为什么没在同步"。
+
 p3 应用本体随后建到了能发布的形态（提交 5f89cc0a，107 个文件、约两万行）：切片 1 重做——p3 有了自己的应用套件 `apps/p3/src/kit/`（app、config、identity、layout 各归一处），会话经插件的命名查询取用、列表继续加载而不重发已有行，登录沿用套件的 sign-ins 并带 owner 一次性链接。切片 26 是发布构建——应用以捆绑的 base code 发布，包名 `@earendil-works/p3`（`apps/p3/package.json:2`），`release:p3:local` 从源检出打本地发布包（根 `package.json:51`）。
 
 命令行入口 `p3`（`apps/p3/bin.ts`）管一机多 Pi：每个 Pi 就是一个数据目录（默认 `~/.pi/p3`，`--pi <名字>` 选命名 Pi、`--dir <路径>` 选任意目录），`p3 server` 前台运行（收到 SIGINT/SIGTERM 即关、worker 停下、数据目录的锁立即可用），`status`/`stop`/`restart`/`list` 经后台 supervisor 管理各 Pi 的服务器；HTTP 服务器带身份验证，启动前先检查 Node 最低版本；会话 worker 的内存基线定在 50 MiB（提交 bddf3d9a），发布内存测试按 55 MiB 把关。
@@ -641,9 +653,9 @@ evals 是行为评测——用真实任务考察 agent 表现，不是玩具基�
 - 2026-09-26 基于 commit d6af72e 补充：durable 新增会话文档 fork（后端按策略复制、所有权索引查询）与类型化 ID（branded type、显式所有权、任务成员关系不可变）；全仓库迁至 TypeScript 7 并以裸 node 跑源码（去 tsx 中间层）。
 - 2026-09-27 基于 commit 2b0a123 补充：TUI 新增 system 默认主题——界面配色从终端报告的前景/背景/ANSI 调色板推导（OKLab 亮度、WCAG 2 对比度），启动不等待（灰度先跑、颜色到达再上色），ThemedText 组件保证文本颜色跟随主题重建。
 - 2026-09-29 基于 commit cb7969d 补充：durable 补任务运行时（defineTask 阶段表、单一调度回调、commit 返回类型化下一状态）与 Harness 任务接口；coding-agent 新增实验性虚拟模型（扩展注册路由策略，按请求挑物理模型与思考档位）。
-- 2026-09-30 基于 commit 1b34779 补充：durable 按设计文档分期落地 Package 16-18——第一次 coding-agent 工具回合（pi.tool/pi.post-tools 任务、四个内置工具）、pi.usage 用量记录与会话视图、会话中止与所有权级联（后台任务是级联边界）。
-- 2026-10-01 基于 commit 17f3dcc 补充：durable 落地 Package 19-20——结构化并发（任务显式归属、waiting/completing 状态与 failFast/allSettled 等待、自底向上中止）与上下文压缩（手动/后台/阻塞/溢出四条触发路径、stale 规则裁决并发摘要、beforeCompact 钩子）；Node SQLite 存储改异步执行并按语句缓存编译结果。
-- 2026-10-02 基于 commit 7fbbd5f 补充：durable 落地 Package 21-23——扩展注册表与每会话 pi.agent 文档（内置工具改扩展形态）、生命周期收尾纪律、taskGraph 任务图视图；实验性 durable TUI 编码 agent 与 client/server 移植；pi 发布 v1.0.0，agent-core 瘦身（实验性 harness 与 session-backends 包整体移除）；架构表补录 codemode/mcp 两包，修正 MCP 支持现状（mcp.json 内置、OAuth 凭证按服务器与网址分开存）。
+- 2026-09-30 基于 commit 1b34779 补充：durable 按设计文档分期实现 Package 16-18——第一次 coding-agent 工具回合（pi.tool/pi.post-tools 任务、四个内置工具）、pi.usage 用量记录与会话视图、会话中止与所有权级联（后台任务是级联边界）。
+- 2026-10-01 基于 commit 17f3dcc 补充：durable 实现 Package 19-20——结构化并发（任务显式归属、waiting/completing 状态与 failFast/allSettled 等待、自底向上中止）与上下文压缩（手动/后台/阻塞/溢出四条触发路径、stale 规则裁决并发摘要、beforeCompact 钩子）；Node SQLite 存储改异步执行并按语句缓存编译结果。
+- 2026-10-02 基于 commit 7fbbd5f 补充：durable 实现 Package 21-23——扩展注册表与每会话 pi.agent 文档（内置工具改扩展形态）、生命周期收尾纪律、taskGraph 任务图视图；实验性 durable TUI 编码 agent 与 client/server 移植；pi 发布 v1.0.0，agent-core 瘦身（实验性 harness 与 session-backends 包整体移除）；架构表补录 codemode/mcp 两包，修正 MCP 支持现状（mcp.json 内置、OAuth 凭证按服务器与网址分开存）。
 - 2026-10-03 基于 commit a276dab 补充：pi-ai 切换 Anthropic inline tools beta（会话中途工具变更按值内联定义、顶层工具清单固定、同名重定义不再全量重发）；供应链策略调整——移除 npm shrinkwrap、传递依赖固定移交 pi.dev 安装器 lockfile、npm audit 脚本化；codemode 脚本输出加上限（16 Mi 字符/10 万项）防 print 循环耗尽宿主内存。
 - 2026-10-05 基于 commit b2b5c42 补充：durable 执行环境有了正式接口——FileSystem（openBinaryReader 位置读/openDirReader 分页目录/FileSystem.watch 原生或轮询监视）与 Shell（argv 数组免 shell 执行、流信息上报）、全链有界（scanLines 一次遍历定位行段、shell 输出尾部窗口带跳过计数、进度节流可配置）、环境一致性测试套件导出并跑通三平台。
 - 2026-10-06 基于 commit 1cedd32 补充：新包 pi-env 让执行环境搬去 SSH 远端（RemoteExecutionEnv 语义与本地一致、Rust 守护进程覆盖四平台、三平台一致性测试矩阵）；durable 的 runtime.context() 把最近读取范围与派生视图驻留内存（闲会话按 contextRetentionMs 释放）、支持按较早条目读取上下文、新增 Cloudflare Durable Object SQLite 适配器；连发 v1.0.3/v1.0.4/v1.1.0；架构表补录 env 包。
@@ -683,3 +695,4 @@ evals 是行为评测——用真实任务考察 agent 表现，不是玩具基�
 - 2026-11-21 基于 commit 780bf31fca 补充：p3 基础重写四处、MCP 结果两条通道、供应商错误重试分类三批、指令角色默认值从 developer 改为 system 、Codex 思考等级作为 configuration_upd…、超大会话加载溢出、Chord 同步三处、编辑器历史去重等（57 条提交）。
 - 2026-11-23 基于 commit 69a6993486 补充：Responses 回放的 function 、p2 未完成的提供方登录在连接掉线后保留、属主五分钟无页面持…（3 条提交）。
 - 2026-11-24 基于 commit 7135638709 补充：分类器协议、p2 备份搬成插件、Wayland 剪贴板显式指定文本类型、超宽 Mermaid 图给出未渲染原因、p2 用 Cmd/Ctrl+Shift 切下一个会话（31 条提交）。
+- 2026-11-25 基于 commit c11a73bf 补充：SSE 解码统一与线性读取、错误响应上报 onResponse、模型目录五笔（Claude thinking 查 models.dev、Gemini xhigh、Copilot 决策模型、OpenRouter 两笔）、启动对话框按程序状态上报、p2 备份 paused 契约、输出文件写失败不崩溃（23 条提交）。
